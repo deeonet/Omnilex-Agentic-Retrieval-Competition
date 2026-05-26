@@ -8,7 +8,7 @@ FORCE_REBUILD_INDICES = False
 
 
 # Local development paths
-REPO_ROOT = Path(".").resolve().parent
+REPO_ROOT = Path(".").resolve()
 DATA_PATH = REPO_ROOT / "data"
 MODEL_PATH = REPO_ROOT / "models"
 OUTPUT_PATH = REPO_ROOT / "output"
