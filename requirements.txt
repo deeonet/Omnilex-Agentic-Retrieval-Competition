@@ -24,3 +24,4 @@ ipywidgets>=8.0.0
 tqdm>=4.65.0
 
 kagglehub>=0.1.0
+graphrag

@@ -5,6 +5,14 @@ __pycache__/
 
 data/
 
+# GraphRAG generated outputs (large, reproducible from indexing)
+graphrag/output/
+graphrag/cache/
+graphrag/logs/
+graphrag/input/
+
+graphrag/.env
+
 # C extensions
 *.so
 
