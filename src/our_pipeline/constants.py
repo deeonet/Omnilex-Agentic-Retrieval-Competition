@@ -9,14 +9,14 @@ FORCE_REBUILD_INDICES = False
 
 # Local development paths
 REPO_ROOT = Path(".").resolve()
-DATA_PATH = REPO_ROOT / "data"
+DATA_PATH = REPO_ROOT / "data" / "raw"
 MODEL_PATH = REPO_ROOT / "models"
 OUTPUT_PATH = REPO_ROOT / "output"
 INDEX_PATH = REPO_ROOT / "data" / "processed"
 
 # CSV corpus files for index building
-LAWS_CSV = DATA_PATH / "raw" / "laws_de.csv"
-COURTS_CSV = DATA_PATH / "raw" / "court_considerations.csv"
+LAWS_CSV = DATA_PATH / "laws_de.csv"
+COURTS_CSV = DATA_PATH / "court_considerations.csv"
 
 # Index cache paths
 LAWS_INDEX_PATH = INDEX_PATH / "laws_index.pkl"

@@ -1,7 +1,4 @@
 import pandas as pd
-from tqdm import tqdm
-
-from omnilex.evaluation.scorer import Scorer, validate_submission_format
 from our_pipeline.constants import (
     CONFIG,
     COURTS_CSV,
@@ -15,9 +12,10 @@ from our_pipeline.constants import (
     OUTPUT_PATH,
     QUERY_FILE,
 )
-from our_pipeline.corpus import get_or_build_index
-from our_pipeline.llm.define_agent import run_agent
+from our_pipeline.corpus import get_or_build_index, get_query_file
 from our_pipeline.search_tools import CourtSearchTool, LawSearchTool
+from our_pipeline.validation import validate_and_score_submission
+from our_pipeline.predictions import generate_predictions
 
 # === CONFIGURATION ===
 
@@ -84,44 +82,12 @@ for name, tool in TOOLS.items():
 
 
 # Load queries from the configured query file
-query_file = QUERY_FILE
-if not query_file.exists():
-    raw_query_file = QUERY_FILE.parent / "raw" / QUERY_FILE.name
-    if raw_query_file.exists():
-        query_file = raw_query_file
-    else:
-        raise FileNotFoundError(f"Query file not found: {QUERY_FILE}")
+query_file = get_query_file()
 
 test_df = pd.read_csv(query_file)
 print(f"Loaded queries from: {query_file}")
 
-# Generate predictions
-predictions = []
-all_logs = []  # Store logs for all queries
-
-for _, row in tqdm(test_df.iterrows(), total=len(test_df), desc="Running agent"):
-    query_id = row["query_id"]
-    query_text = row["query"]
-
-    # Run agent
-    raw_citations, logs = run_agent(query_text, tools=TOOLS, verbose=False)
-
-    # Store logs with query_id
-    all_logs.append({
-        "query_id": query_id,
-        "query": query_text,
-        "logs": logs,
-    })
-
-    predictions.append({
-        "query_id": query_id,
-        "predicted_citations": ";".join(raw_citations),
-    })
-
-print(f"\nGenerated predictions for {len(predictions)} queries")
-print(f"Collected logs for {len(all_logs)} queries")
-
-predictions_df = pd.DataFrame(predictions)
+predictions_df = generate_predictions(test_df, TOOLS)
 
 # Save submission
 submission_path = OUTPUT_PATH / "submission.csv"
@@ -135,24 +101,4 @@ print("\nSample submission:")
 print(predictions_df.head())
 
 # Validate and score submission
-print("\nValidating submission:")
-validation_errors = validate_submission_format(submission_path)
-if validation_errors:
-    print("Validation failed:")
-    for error in validation_errors:
-        print(f"  - {error}")
-else:
-    print("Validation passed")
-
-if "gold_citations" in test_df.columns:
-    print(f"\nScoring submission against: {query_file}")
-    scores = Scorer().score(submission_path, query_file)
-
-    print("\nScores:")
-    for metric, value in scores.items():
-        if isinstance(value, float):
-            print(f"  {metric}: {value:.4f}")
-        else:
-            print(f"  {metric}: {value}")
-else:
-    print("\nNo gold_citations column found, so scoring is skipped for this file.")
+validate_and_score_submission(query_file)

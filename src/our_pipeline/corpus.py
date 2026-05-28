@@ -4,6 +4,7 @@ import pickle
 import re
 from rank_bm25 import BM25Okapi
 from pathlib import Path
+from our_pipeline.constants import QUERY_FILE
 
 
 class BM25Index:
@@ -260,3 +261,15 @@ def get_or_build_index(
     print(f"Index cached.")
     
     return index
+
+
+def get_query_file():
+    # Load queries from the configured query file
+    query_file = QUERY_FILE
+    if not query_file.exists():
+        raw_query_file = QUERY_FILE.parent / "raw" / QUERY_FILE.name
+        if raw_query_file.exists():
+            query_file = raw_query_file
+        else:
+            raise FileNotFoundError(f"Query file not found: {QUERY_FILE}")
+    return query_file
