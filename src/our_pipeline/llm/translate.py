@@ -10,12 +10,13 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_TEMPLATE = (
     "You are a legal translation assistant for Swiss law "
-    "(Bundesrecht / droit fédéral).\n"
+    "(Bundesrecht / droit fédéral / diritto federale).\n"
     "Translate the following query ONLY — do not answer it.\n"
-    "Respond with exactly three lines and nothing else:\n"
+    "Respond with exactly four lines and nothing else:\n"
     "EN: <English translation>\n"
     "DE: <German translation>\n"
-    "FR: <French translation>\n\n"
+    "FR: <French translation>\n"
+    "IT: <Italian translation>\n\n"
     "Query: {query}"
 )
 
@@ -35,7 +36,12 @@ def translate_query(query: str) -> dict[str, str]:
     """
     prompt = _PROMPT_TEMPLATE.format(query=query)
     try:
-        raw = llm(prompt, max_tokens=150, temperature=0.0)["choices"][0]["text"]
+        raw = llm(
+            prompt,
+            max_tokens=300,
+            temperature=0.0,
+            extra_body={"enable_thinking": False},
+        )["choices"][0]["text"]
     except Exception as exc:
         logger.warning("Translation LLM call failed: %s", exc)
         return {}
@@ -55,6 +61,10 @@ def translate_query(query: str) -> dict[str, str]:
             text = line[3:].strip()
             if text:
                 translations["fr"] = text
+        elif line.upper().startswith("IT:"):
+            text = line[3:].strip()
+            if text:
+                translations["it"] = text
 
     if not translations:
         logger.warning("Translation parsing failed for query %r; raw=%r", query, raw[:200])
