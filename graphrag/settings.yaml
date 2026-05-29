@@ -1,8 +1,11 @@
 ### GraphRAG configuration for Swiss legal corpus (Omnilex competition)
 ### Full config reference: https://microsoft.github.io/graphrag/config/yaml/
 ###
-### Set GRAPHRAG_API_KEY, GRAPHRAG_API_BASE, GRAPHRAG_CHAT_MODEL, and
-### GRAPHRAG_EMBEDDING_MODEL in graphrag/.env before running indexing.
+### Variables to set in graphrag/.env:
+###   GRAPHRAG_API_KEY    - academic cloud key (already set)
+###   GRAPHRAG_API_BASE   - https://chat-ai.academiccloud.de/v1
+###   GRAPHRAG_CHAT_MODEL - qwen3.5-27b
+###   MISTRAL_API_KEY     - free from https://console.mistral.ai/
 
 ### LLM settings ###
 
@@ -21,20 +24,23 @@ completion_models:
     requests_per_minute: 60
     concurrent_requests: 4
 
+# Embeddings use Mistral AI (free trial, multilingual, OpenAI-compatible).
+# Model: mistral-embed — supports German, French, Italian (Swiss law corpus).
+# Get a free API key at: https://console.mistral.ai/  (no credit card needed)
 embedding_models:
   default_embedding_model:
     model_provider: openai
-    model: ${GRAPHRAG_EMBEDDING_MODEL}
-    api_key: ${GRAPHRAG_API_KEY}
-    api_base: ${GRAPHRAG_API_BASE}
+    model: mistral-embed
+    api_key: ${MISTRAL_API_KEY}
+    api_base: https://api.mistral.ai/v1
     auth_method: api_key
-    request_timeout: 180.0
+    request_timeout: 60.0
     max_retries: 5
     retry:
       type: exponential_backoff
-    tokens_per_minute: 80000
-    requests_per_minute: 120
-    concurrent_requests: 8
+    tokens_per_minute: 500000
+    requests_per_minute: 60
+    concurrent_requests: 4
 
 ### Document processing settings ###
 

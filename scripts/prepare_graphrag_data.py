@@ -111,19 +111,39 @@ def prepare_laws(output_dir: Path) -> None:
     print(f"  Done: {total_files} statute files, {total_articles:,} articles")
 
 
-def prepare_courts(output_dir: Path, max_volumes: int | None = None) -> None:
-    print("Loading court decisions corpus...")
-    df = pd.read_csv(COURTS_CSV)
-    print(f"  {len(df):,} court excerpts")
+def prepare_courts(
+    output_dir: Path,
+    max_volumes: int | None = None,
+    max_excerpts: int | None = None,
+) -> None:
+    """Stream court decisions CSV to avoid loading the full 2.4 GB file into RAM."""
+    # GraphRAG/Arrow hard limit is 2 GB per array. Keep well under that.
+    SIZE_WARN_BYTES = 1_200_000_000  # 1.2 GB warning threshold
+
+    print("Streaming court decisions corpus (2.4 M rows — not loaded all at once)...")
 
     groups: dict[str, list[str]] = defaultdict(list)
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Grouping courts by BGE volume"):
-        citation = str(row.get("citation", ""))
-        text = str(row.get("text", ""))
-        volume_key = extract_bge_volume_division(citation)
+    total_rows = 0
+    chunk_size = 50_000
 
-        block = f"## {citation}\n{text}\n"
-        groups[volume_key].append(block)
+    with tqdm(desc="Reading court excerpts", unit=" rows") as pbar:
+        for chunk in pd.read_csv(COURTS_CSV, chunksize=chunk_size):
+            for _, row in chunk.iterrows():
+                citation = str(row.get("citation", ""))
+                text = str(row.get("text", ""))
+                volume_key = extract_bge_volume_division(citation)
+                groups[volume_key].append(f"## {citation}\n{text}\n")
+                total_rows += 1
+                pbar.update(1)
+
+                if max_excerpts is not None and total_rows >= max_excerpts:
+                    print(f"  Reached --max-court-excerpts={max_excerpts}, stopping early.")
+                    break
+            else:
+                continue  # inner loop didn't break — keep reading chunks
+            break          # inner loop broke — stop outer loop too
+
+    print(f"  Read {total_rows:,} excerpts across {len(groups)} BGE volumes")
 
     courts_dir = output_dir / "courts"
     courts_dir.mkdir(parents=True, exist_ok=True)
@@ -134,15 +154,22 @@ def prepare_courts(output_dir: Path, max_volumes: int | None = None) -> None:
         volume_keys = volume_keys[:max_volumes]
 
     print(f"  Writing {len(volume_keys)} BGE volume files...")
+    total_bytes = 0
     for key in tqdm(volume_keys, desc="Writing BGE volume files"):
         blocks = groups[key]
         out_path = courts_dir / f"{key}.txt"
-        with out_path.open("w", encoding="utf-8") as f:
-            f.write(f"# Swiss Federal Court Decisions: {key.replace('_', ' ')}\n\n")
-            f.write("\n---\n\n".join(blocks))
+        content = f"# Swiss Federal Court Decisions: {key.replace('_', ' ')}\n\n" + "\n---\n\n".join(blocks)
+        out_path.write_text(content, encoding="utf-8")
+        total_bytes += len(content.encode())
 
     written = sum(len(groups[k]) for k in volume_keys)
-    print(f"  Done: {len(volume_keys)} BGE volume files, {written:,} excerpts written")
+    size_mb = total_bytes / 1_000_000
+    print(f"  Done: {len(volume_keys)} BGE volume files, {written:,} excerpts, {size_mb:.0f} MB")
+
+    if total_bytes > SIZE_WARN_BYTES:
+        print()
+        print(f"  WARNING: court output is {size_mb:.0f} MB — close to GraphRAG's 2 GB limit.")
+        print("  Consider using --max-court-excerpts 200000 to stay safely under it.")
 
 
 def main() -> None:
@@ -155,6 +182,17 @@ def main() -> None:
         default=None,
         metavar="N",
         help="Limit court output to N BGE volume files (useful for a quick test run)",
+    )
+    parser.add_argument(
+        "--max-court-excerpts",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Stop reading courts after N excerpts total. "
+            "Avoids the 2 GB GraphRAG/Arrow array limit. "
+            "Recommended: 200000 (≈ 200 MB of court text)."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -181,11 +219,27 @@ def main() -> None:
         if not COURTS_CSV.exists():
             print(f"Warning: {COURTS_CSV} not found, skipping courts", file=sys.stderr)
         else:
-            prepare_courts(args.output_dir, max_volumes=args.max_court_volumes)
+            prepare_courts(
+                args.output_dir,
+                max_volumes=args.max_court_volumes,
+                max_excerpts=args.max_court_excerpts,
+            )
+
+    # Final size check — warn before GraphRAG hits the 2 GB Arrow limit
+    total_input_bytes = sum(
+        f.stat().st_size for f in args.output_dir.rglob("*.txt")
+    )
+    total_mb = total_input_bytes / 1_000_000
+    print(f"\nTotal input size: {total_mb:.0f} MB")
+    if total_input_bytes > 1_500_000_000:
+        print("WARNING: Input exceeds 1.5 GB. GraphRAG will fail with the Arrow 2 GB limit.")
+        print("Run with --laws-only, or add --max-court-excerpts 200000 for courts.")
+    else:
+        print("Size OK — within GraphRAG's 2 GB limit.")
 
     print(f"\nInput files ready in: {args.output_dir}")
     print("Next steps:")
-    print("  1. Edit graphrag/.env with your API credentials")
+    print("  1. Ensure graphrag/.env has MISTRAL_API_KEY set")
     print("  2. Run:  graphrag index --root ./graphrag")
     print("  3. Use GraphRAGSearchEngine in your retrieval pipeline")
 
