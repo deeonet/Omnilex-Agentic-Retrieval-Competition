@@ -218,6 +218,7 @@ __marimo__/
 
 # AI Coding
 CLAUDE.md
+AGENTS.md
 .claude/
 
 # Competition data files
@@ -234,3 +235,6 @@ output/
 models/
 *.gguf
 *.bin
+
+# other
+**/.DS_Store
