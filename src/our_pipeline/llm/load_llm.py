@@ -16,7 +16,7 @@ from openai import OpenAI
 
 
 DEFAULT_BASE_URL = "https://chat-ai.academiccloud.de/v1"
-DEFAULT_MODEL = "meta-llama-3.1-8b-instruct"
+DEFAULT_MODEL = "qwen3.5-27b"
 
 
 class OpenAICompatibleLLM:

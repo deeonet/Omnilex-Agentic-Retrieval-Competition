@@ -1,4 +1,7 @@
+from our_pipeline.constants import CONFIG
 from our_pipeline.corpus import BM25Index
+from our_pipeline.llm.translate import translate_query
+
 
 class LawSearchTool:
     """Tool for searching Swiss federal laws corpus.
@@ -33,6 +36,7 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
         self.top_k = top_k
         self.max_excerpt_length = max_excerpt_length
         self._last_results: list[dict] = []
+        self._translation_cache: dict[str, dict[str, str]] = {}
 
     def __call__(self, query: str) -> str:
         """Execute search and return formatted results.
@@ -58,24 +62,64 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
             self._last_results = []
             return "Error: Empty query. Please provide search terms."
 
-        results = self.index.search(query, top_k=self.top_k)
-        self._last_results = results
+        if CONFIG.get("enable_multilingual_search", False):
+            self._last_results = self._multilingual_search(query)
+        else:
+            self._last_results = self.index.search(query, top_k=self.top_k)
 
-        if not results:
+        if not self._last_results:
             return f"No relevant federal laws found for: '{query}'"
 
         formatted = []
-        for doc in results:
+        for doc in self._last_results:
             citation = doc.get("citation", "Unknown")
             text = doc.get("text", "")
 
-            # Truncate text for readability
             if len(text) > self.max_excerpt_length:
                 text = text[: self.max_excerpt_length] + "..."
 
             formatted.append(f"- {citation}: {text}")
 
         return "\n".join(formatted)
+
+    def _multilingual_search(self, query: str) -> list[dict]:
+        """Search with EN/DE/FR query variants and fuse results via CombMAX.
+
+        Translates the query to English, German, and French, runs a BM25
+        search for each unique variant, and keeps the highest-scoring
+        document per citation across all language results.
+
+        Args:
+            query: Query string in any language.
+
+        Returns:
+            List of document dicts with ``_score`` key, sorted descending,
+            trimmed to ``self.top_k``.
+        """
+        if query not in self._translation_cache:
+            self._translation_cache[query] = translate_query(query)
+        translations = self._translation_cache[query]
+
+        # Collect unique query variants; fall back to original if translation failed
+        seen: set[str] = set()
+        queries: list[str] = []
+        for q in [translations.get("en"), translations.get("de"), translations.get("fr"), query]:
+            if q and q.strip() and q not in seen:
+                seen.add(q)
+                queries.append(q)
+
+        best_by_citation: dict[str, dict] = {}
+        for q in queries:
+            for doc in self.index.search(q, top_k=self.top_k, return_scores=True):
+                citation = doc.get("citation", "")
+                if not citation:
+                    continue
+                existing = best_by_citation.get(citation)
+                if existing is None or doc["_score"] > existing["_score"]:
+                    best_by_citation[citation] = doc
+
+        merged = sorted(best_by_citation.values(), key=lambda d: d["_score"], reverse=True)
+        return merged[: self.top_k]
 
     def get_last_citations(self) -> list[str]:
         """Return citations from the last search.
@@ -119,6 +163,7 @@ Example queries: "negligence standard of care", "Sorgfaltspflicht", "contract in
         self.top_k = top_k
         self.max_excerpt_length = max_excerpt_length
         self._last_results: list[dict] = []
+        self._translation_cache: dict[str, dict[str, str]] = {}
 
     def __call__(self, query: str) -> str:
         """Execute search and return formatted results.
@@ -144,24 +189,63 @@ Example queries: "negligence standard of care", "Sorgfaltspflicht", "contract in
             self._last_results = []
             return "Error: Empty query. Please provide search terms."
 
-        results = self.index.search(query, top_k=self.top_k)
-        self._last_results = results
+        if CONFIG.get("enable_multilingual_search", False):
+            self._last_results = self._multilingual_search(query)
+        else:
+            self._last_results = self.index.search(query, top_k=self.top_k)
 
-        if not results:
+        if not self._last_results:
             return f"No relevant court decisions found for: '{query}'"
 
         formatted = []
-        for doc in results:
+        for doc in self._last_results:
             citation = doc.get("citation", "Unknown")
             text = doc.get("text", "")
 
-            # Truncate text for readability
             if len(text) > self.max_excerpt_length:
                 text = text[: self.max_excerpt_length] + "..."
 
             formatted.append(f"- {citation}: {text}")
 
         return "\n".join(formatted)
+
+    def _multilingual_search(self, query: str) -> list[dict]:
+        """Search with EN/DE/FR query variants and fuse results via CombMAX.
+
+        Translates the query to English, German, and French, runs a BM25
+        search for each unique variant, and keeps the highest-scoring
+        document per citation across all language results.
+
+        Args:
+            query: Query string in any language.
+
+        Returns:
+            List of document dicts with ``_score`` key, sorted descending,
+            trimmed to ``self.top_k``.
+        """
+        if query not in self._translation_cache:
+            self._translation_cache[query] = translate_query(query)
+        translations = self._translation_cache[query]
+
+        seen: set[str] = set()
+        queries: list[str] = []
+        for q in [translations.get("en"), translations.get("de"), translations.get("fr"), query]:
+            if q and q.strip() and q not in seen:
+                seen.add(q)
+                queries.append(q)
+
+        best_by_citation: dict[str, dict] = {}
+        for q in queries:
+            for doc in self.index.search(q, top_k=self.top_k, return_scores=True):
+                citation = doc.get("citation", "")
+                if not citation:
+                    continue
+                existing = best_by_citation.get(citation)
+                if existing is None or doc["_score"] > existing["_score"]:
+                    best_by_citation[citation] = doc
+
+        merged = sorted(best_by_citation.values(), key=lambda d: d["_score"], reverse=True)
+        return merged[: self.top_k]
 
     def get_last_citations(self) -> list[str]:
         """Return citations from the last search.

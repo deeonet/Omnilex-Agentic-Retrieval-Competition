@@ -43,6 +43,7 @@ CONFIG = {
     # Retrieval settings
     "top_k_laws": 40,       # Results per law search
     "top_k_courts": 40,     # Results per court search
+    "enable_multilingual_search": True,  # Translate queries to EN+DE+FR before BM25 (CombMAX fusion)
     
     # Paths
     "test_file": "test.csv",
