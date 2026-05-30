@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 
+from our_pipeline.constants import CONFIG
 from our_pipeline.llm.load_llm import llm
 
 logger = logging.getLogger(__name__)
@@ -38,13 +40,16 @@ def translate_query(query: str) -> dict[str, str]:
     try:
         raw = llm(
             prompt,
-            max_tokens=300,
+            max_tokens=512,
             temperature=0.0,
-            extra_body={"enable_thinking": False},
+            model=CONFIG["translation_model"],
         )["choices"][0]["text"]
     except Exception as exc:
         logger.warning("Translation LLM call failed: %s", exc)
         return {}
+
+    # Strip any inline reasoning block in case a thinking-capable model is used.
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
     translations: dict[str, str] = {}
     for line in raw.splitlines():

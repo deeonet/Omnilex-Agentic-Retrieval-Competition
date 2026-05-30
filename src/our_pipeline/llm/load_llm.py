@@ -44,6 +44,7 @@ class OpenAICompatibleLLM:
         max_tokens: int = 512,
         temperature: float = 0.1,
         stop: list[str] | None = None,
+        model: str | None = None,
         **kwargs: Any,
     ) -> dict[str, list[dict[str, str]]]:
         """Generate text from a raw prompt using chat completions.
@@ -53,6 +54,7 @@ class OpenAICompatibleLLM:
             max_tokens: Maximum tokens to generate.
             temperature: Sampling temperature.
             stop: Optional stop sequences.
+            model: Optional per-call model override; defaults to the instance model.
             **kwargs: Additional API arguments forwarded to chat completions.
 
         Returns:
@@ -61,7 +63,7 @@ class OpenAICompatibleLLM:
         """
         completion = self.client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model=self.model,
+            model=model or self.model,
             max_tokens=max_tokens,
             temperature=temperature,
             stop=stop,

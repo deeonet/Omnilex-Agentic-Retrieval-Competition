@@ -21,7 +21,12 @@ def parse_all_agent_actions(response: str) -> list[tuple[str, str]]:
     
     # Find all "Action:" lines
     action_pattern = r"Action:\s*(\w+)"
-    input_pattern = r"Action Input:\s*(.+?)(?=\nAction:|$)"
+    # Stop the Action Input at a blank line or the next ReAct section keyword so
+    # trailing "Thought:" reasoning doesn't leak into the search query.
+    input_pattern = (
+        r"Action Input:[ \t]*(.+?)"
+        r"(?=\n\s*\n|\n\s*(?:Thought|Action|Observation|Final Answer)\s*:|$)"
+    )
     
     # Find all action matches with their positions
     action_matches = list(re.finditer(action_pattern, response, re.IGNORECASE))
