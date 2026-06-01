@@ -16,6 +16,8 @@
 
 8) Set kaggle env variable using value from step 3: export KAGGLE_API_TOKEN=KGAT_generated_token
 
-9) Download data: python3 -m download_data
+9) Download data: python3 -m download_kaggle_data
 
 10) This will print the path where the data is saved: mv printed_path data
+
+11) python utils/download_data.py
