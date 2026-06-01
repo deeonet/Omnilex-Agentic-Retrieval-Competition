@@ -44,6 +44,7 @@ CONFIG = {
     "top_k_laws": 40,       # Results per law search
     "top_k_courts": 40,     # Results per court search
     "enable_multilingual_search": True,  # Translate queries to EN+DE+FR before BM25 (CombMAX fusion)
+    "translation_model": "qwen3-30b-a3b-instruct-2507",  # non-reasoning instruct model
     
     # Paths
     "test_file": "test.csv",

@@ -83,9 +83,9 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
         return "\n".join(formatted)
 
     def _multilingual_search(self, query: str) -> list[dict]:
-        """Search with EN/DE/FR query variants and fuse results via CombMAX.
+        """Search with EN/DE/FR/IT query variants and fuse results via CombMAX.
 
-        Translates the query to English, German, and French, runs a BM25
+        Translates the query to English, German, French, and Italian, runs a BM25
         search for each unique variant, and keeps the highest-scoring
         document per citation across all language results.
 
@@ -103,7 +103,7 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
         # Collect unique query variants; fall back to original if translation failed
         seen: set[str] = set()
         queries: list[str] = []
-        for q in [translations.get("en"), translations.get("de"), translations.get("fr"), query]:
+        for q in [translations.get("en"), translations.get("de"), translations.get("fr"), translations.get("it"), query]:
             if q and q.strip() and q not in seen:
                 seen.add(q)
                 queries.append(q)
@@ -210,9 +210,9 @@ Example queries: "negligence standard of care", "Sorgfaltspflicht", "contract in
         return "\n".join(formatted)
 
     def _multilingual_search(self, query: str) -> list[dict]:
-        """Search with EN/DE/FR query variants and fuse results via CombMAX.
+        """Search with EN/DE/FR/IT query variants and fuse results via CombMAX.
 
-        Translates the query to English, German, and French, runs a BM25
+        Translates the query to English, German, French, and Italian, runs a BM25
         search for each unique variant, and keeps the highest-scoring
         document per citation across all language results.
 
@@ -229,7 +229,7 @@ Example queries: "negligence standard of care", "Sorgfaltspflicht", "contract in
 
         seen: set[str] = set()
         queries: list[str] = []
-        for q in [translations.get("en"), translations.get("de"), translations.get("fr"), query]:
+        for q in [translations.get("en"), translations.get("de"), translations.get("fr"), translations.get("it"), query]:
             if q and q.strip() and q not in seen:
                 seen.add(q)
                 queries.append(q)
