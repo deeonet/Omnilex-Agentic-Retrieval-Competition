@@ -34,8 +34,13 @@ CONFIG = {
     "n_gpu_layers": -1,    # GPU layers (-1 = offload all layers to GPU)
     
     # Agent settings
+    # Non-reasoning instruct model for agent calls: the default reasoning model
+    # (qwen3.5-27b) burns the whole token budget on hidden <think> on knowledge-heavy
+    # prompts and the API returns empty content -> 0 citations for that query.
+    "agent_model": "qwen3-30b-a3b-instruct-2507",
     "max_iterations": 3,   # Max agent iterations per query
     "max_tokens": 512,
+    "max_tokens_retry": 1024,  # Larger budget when a call returns empty content
     "temperature": 0.1,
     "max_observation_chars": 1200,  # Reduced from 2000 to prevent context overflow
     "max_conversation_chars": 28000,  # Safety net: truncate if conversation exceeds this

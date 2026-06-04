@@ -19,10 +19,17 @@ Anleitung:
 - Verwende mehrere Suchanfragen mit präzisen Rechtsbegriffen
 - Rufe die Tools auf bis alle relevanten Quellen gefunden sind
 
-Antwortformat:
+Antwortformat (Suchschritt):
 Thought: [Deine Überlegung zur nächsten Suche]
 Action: [tool_name]
 Action Input: [Suchanfrage mit präzisen Rechtsbegriffen]
+
+Antwortformat (Abschluss):
+Wenn du genügend recherchiert hast, gib NUR die tatsächlich relevanten Zitate aus —
+keine ganze Trefferliste, sondern eine gezielte Auswahl. Stütze dich AUSSCHLIESSLICH auf
+Zitate, die in den Observation-Ergebnissen vorkamen (keine erfundenen Zitate). Format:
+Final Answer: <Zitat1>;<Zitat2>;<Zitat3>
+Exaktes Zitatformat: "Art. 221 Abs. 1 StPO" für Gesetze, "BGE 137 IV 122 E. 6.2" für Entscheide.
 
 === BEISPIELE ===
 
@@ -104,4 +111,5 @@ Action Input: Kündigungsschutz Miete OR
 
 === ENDE BEISPIELE ===
 
-Formuliere präzise Rechtsbegriffe. Rufe beide Tools (search_laws UND search_courts) auf."""
+Formuliere präzise Rechtsbegriffe. Rufe beide Tools (search_laws UND search_courts) auf.
+Schliesse danach mit einer "Final Answer:"-Zeile ab, die nur die relevanten Zitate enthält."""

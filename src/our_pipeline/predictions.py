@@ -10,8 +10,14 @@ def generate_predictions(test_df: pd.DataFrame, TOOLS) -> pd.DataFrame:
         query_id = row["query_id"]
         query_text = row["query"]
 
-        # Run agent
-        raw_citations, logs = run_agent(query_text, tools=TOOLS, verbose=False)
+        # Run agent. Guard per-query so a transient API failure (e.g. a 500 that
+        # survives client retries) yields empty predictions for this query instead
+        # of aborting the whole batch.
+        try:
+            raw_citations, logs = run_agent(query_text, tools=TOOLS, verbose=False)
+        except Exception as exc:  # noqa: BLE001 - one failed query must not kill the run
+            print(f"  ! run_agent failed for {query_id}: {exc}")
+            raw_citations, logs = [], [{"type": "error", "error": str(exc)}]
 
         # Store logs with query_id
         all_logs.append({
