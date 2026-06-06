@@ -48,9 +48,20 @@ CONFIG = {
     # Retrieval settings
     "top_k_laws": 40,       # Results per law search
     "top_k_courts": 40,     # Results per court search
-    "enable_multilingual_search": True,  # Translate queries to EN+DE+FR before BM25 (CombMAX fusion)
+    "enable_multilingual_search": True,  # Court tool only: translate to EN/DE/FR/IT (corpus is multilingual)
     "translation_model": "qwen3-30b-a3b-instruct-2507",  # non-reasoning instruct model
-    
+
+    # BM25 index/tokenization settings (changing any of these requires an index rebuild)
+    "bm25_k1": 1.5,                 # BM25Okapi term-frequency saturation
+    "bm25_b": 0.75,                 # BM25Okapi length normalization
+    "bm25_remove_stopwords": True,  # Drop German + legal stopwords during tokenization
+    "bm25_use_stemming": True,      # Snowball German stemming (no-op if snowballstemmer is unavailable)
+
+    # Law tool query strategy (German-only corpus -> German keyword extraction + explicit citations,
+    # fused with Reciprocal Rank Fusion). When False, search the raw query directly.
+    "law_query_expansion": True,
+    "rrf_k": 60,                    # Reciprocal Rank Fusion constant
+
     # Paths
     "test_file": "test.csv",
 }

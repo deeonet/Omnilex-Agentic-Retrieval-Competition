@@ -1,6 +1,51 @@
 from our_pipeline.constants import CONFIG
-from our_pipeline.corpus import BM25Index
-from our_pipeline.llm.translate import translate_query
+from our_pipeline.bm25.corpus import BM25Index
+from our_pipeline.bm25.llm.keywords import extract_explicit_citations, extract_legal_keywords
+from our_pipeline.bm25.llm.translate import translate_query
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: list[list[dict]],
+    k: int = 60,
+    top_k: int | None = None,
+    citation_field: str = "citation",
+) -> list[dict]:
+    """Fuse several ranked result lists with Reciprocal Rank Fusion.
+
+    RRF combines results by rank rather than raw score, so it is robust to the
+    incomparable BM25 score scales produced by query variants of different length
+    or vocabulary. Each citation accrues ``1 / (k + rank)`` from every list it
+    appears in (rank is 0-based). The document dict from the list where a citation
+    ranked highest is kept for display and annotated with ``_rrf_score``.
+
+    Args:
+        ranked_lists: Per-variant result lists, each already sorted best-first.
+        k: RRF constant (larger => flatter contribution across ranks).
+        top_k: Trim the fused result to this many documents (None keeps all).
+        citation_field: Dict key identifying a document.
+
+    Returns:
+        Fused documents sorted by descending RRF score.
+    """
+    scores: dict[str, float] = {}
+    best_doc: dict[str, dict] = {}
+    best_rank: dict[str, int] = {}
+
+    for ranked in ranked_lists:
+        for rank, doc in enumerate(ranked):
+            citation = doc.get(citation_field, "")
+            if not citation:
+                continue
+            scores[citation] = scores.get(citation, 0.0) + 1.0 / (k + rank + 1)
+            if citation not in best_rank or rank < best_rank[citation]:
+                best_rank[citation] = rank
+                best_doc[citation] = doc
+
+    fused = sorted(best_doc.values(), key=lambda d: scores[d[citation_field]], reverse=True)
+    for doc in fused:
+        doc["_rrf_score"] = scores[doc[citation_field]]
+
+    return fused[:top_k] if top_k is not None else fused
 
 
 class LawSearchTool:
@@ -36,7 +81,7 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
         self.top_k = top_k
         self.max_excerpt_length = max_excerpt_length
         self._last_results: list[dict] = []
-        self._translation_cache: dict[str, dict[str, str]] = {}
+        self._expansion_cache: dict[str, tuple[str, list[str]]] = {}
 
     def __call__(self, query: str) -> str:
         """Execute search and return formatted results.
@@ -62,8 +107,8 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
             self._last_results = []
             return "Error: Empty query. Please provide search terms."
 
-        if CONFIG.get("enable_multilingual_search", False):
-            self._last_results = self._multilingual_search(query)
+        if CONFIG.get("law_query_expansion", True):
+            self._last_results = self._expanded_search(query)
         else:
             self._last_results = self.index.search(query, top_k=self.top_k)
 
@@ -82,44 +127,63 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
 
         return "\n".join(formatted)
 
-    def _multilingual_search(self, query: str) -> list[dict]:
-        """Search with EN/DE/FR/IT query variants and fuse results via CombMAX.
+    def _expanded_search(self, query: str) -> list[dict]:
+        """Search the German law corpus with extracted query variants, fused via RRF.
 
-        Translates the query to English, German, French, and Italian, runs a BM25
-        search for each unique variant, and keeps the highest-scoring
-        document per citation across all language results.
+        The corpus is German-only, so instead of translating the whole (often verbose)
+        question we extract concise German legal keywords and any statute articles the
+        query names outright. Each variant is searched independently and the per-variant
+        ranked lists are combined with Reciprocal Rank Fusion (scale-invariant, unlike
+        the previous CombMAX over raw BM25 scores). Falls back to the raw query when
+        extraction yields nothing.
 
         Args:
             query: Query string in any language.
 
         Returns:
-            List of document dicts with ``_score`` key, sorted descending,
-            trimmed to ``self.top_k``.
+            Fused list of document dicts, trimmed to ``self.top_k``.
         """
-        if query not in self._translation_cache:
-            self._translation_cache[query] = translate_query(query)
-        translations = self._translation_cache[query]
+        if query not in self._expansion_cache:
+            self._expansion_cache[query] = (
+                extract_legal_keywords(query),
+                extract_explicit_citations(query),
+            )
+        keywords, citations = self._expansion_cache[query]
 
-        # Collect unique query variants; fall back to original if translation failed
+        # 1. Guaranteed hits: articles the query names outright that exist in the corpus.
+        #    BM25 ranks these unreliably (citation tokens carry little weight), so look
+        #    them up directly instead of trusting the score.
+        results: list[dict] = []
         seen: set[str] = set()
-        queries: list[str] = []
-        for q in [translations.get("en"), translations.get("de"), translations.get("fr"), translations.get("it"), query]:
-            if q and q.strip() and q not in seen:
-                seen.add(q)
-                queries.append(q)
+        for citation in citations:
+            doc = self.index.get_by_citation(citation)
+            if doc is not None and doc["citation"] not in seen:
+                seen.add(doc["citation"])
+                results.append(doc)
 
-        best_by_citation: dict[str, dict] = {}
-        for q in queries:
-            for doc in self.index.search(q, top_k=self.top_k, return_scores=True):
-                citation = doc.get("citation", "")
-                if not citation:
-                    continue
-                existing = best_by_citation.get(citation)
-                if existing is None or doc["_score"] > existing["_score"]:
-                    best_by_citation[citation] = doc
+        # 2. Keyword BM25 search fills the remaining slots. RRF fuses multiple keyword
+        #    variants when present (scale-invariant, unlike CombMAX over raw scores).
+        variants = [keywords] if keywords else [query]  # fall back to raw query
+        ranked_lists = [
+            hits
+            for v in variants
+            if (hits := self.index.search(v, top_k=self.top_k, return_scores=True))
+        ]
+        if len(ranked_lists) == 1:
+            keyword_hits = ranked_lists[0]
+        elif ranked_lists:
+            keyword_hits = reciprocal_rank_fusion(ranked_lists, k=CONFIG.get("rrf_k", 60))
+        else:
+            keyword_hits = []
 
-        merged = sorted(best_by_citation.values(), key=lambda d: d["_score"], reverse=True)
-        return merged[: self.top_k]
+        for doc in keyword_hits:
+            if len(results) >= self.top_k:
+                break
+            if doc["citation"] not in seen:
+                seen.add(doc["citation"])
+                results.append(doc)
+
+        return results[: self.top_k]
 
     def get_last_citations(self) -> list[str]:
         """Return citations from the last search.

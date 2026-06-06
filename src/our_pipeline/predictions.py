@@ -1,6 +1,6 @@
 from tqdm import tqdm
 import pandas as pd
-from our_pipeline.llm.define_agent import run_agent
+from our_pipeline.bm25.llm.define_agent import run_agent
 
 def generate_predictions(test_df: pd.DataFrame, TOOLS) -> pd.DataFrame:
     predictions = []

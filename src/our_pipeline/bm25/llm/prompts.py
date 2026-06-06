@@ -29,7 +29,6 @@ Wenn du genügend recherchiert hast, gib NUR die tatsächlich relevanten Zitate 
 keine ganze Trefferliste, sondern eine gezielte Auswahl. Stütze dich AUSSCHLIESSLICH auf
 Zitate, die in den Observation-Ergebnissen vorkamen (keine erfundenen Zitate). Format:
 Final Answer: <Zitat1>;<Zitat2>;<Zitat3>
-Exaktes Zitatformat: "Art. 221 Abs. 1 StPO" für Gesetze, "BGE 137 IV 122 E. 6.2" für Entscheide.
 
 === BEISPIELE ===
 

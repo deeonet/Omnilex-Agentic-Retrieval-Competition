@@ -1,7 +1,7 @@
 import re
 from omnilex.citations.normalizer import CitationNormalizer
-from our_pipeline.llm.load_llm import llm
-from our_pipeline.llm.prompts import AGENT_SYSTEM_PROMPT
+from our_pipeline.bm25.llm.load_llm import llm
+from our_pipeline.bm25.llm.prompts import AGENT_SYSTEM_PROMPT
 from our_pipeline.constants import CONFIG
 
 # Shared normalizer for parsing the model's Final Answer into canonical citations.

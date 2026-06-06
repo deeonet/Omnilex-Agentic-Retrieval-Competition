@@ -12,7 +12,7 @@ from our_pipeline.constants import (
     OUTPUT_PATH,
     QUERY_FILE,
 )
-from our_pipeline.corpus import get_or_build_index, get_query_file
+from our_pipeline.bm25.corpus import get_or_build_index, get_query_file
 from our_pipeline.search_tools import CourtSearchTool, LawSearchTool
 from our_pipeline.validation import validate_and_score_submission
 from our_pipeline.predictions import generate_predictions
