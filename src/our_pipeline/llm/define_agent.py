@@ -1,7 +1,7 @@
 import re
 from omnilex.citations.normalizer import CitationNormalizer
-from our_pipeline.bm25.llm.load_llm import llm
-from our_pipeline.bm25.llm.prompts import AGENT_SYSTEM_PROMPT
+from our_pipeline.llm.load_llm import llm
+from our_pipeline.llm.prompts import AGENT_SYSTEM_PROMPT
 from our_pipeline.constants import CONFIG
 
 # Shared normalizer for parsing the model's Final Answer into canonical citations.
@@ -333,7 +333,7 @@ def run_agent(query: str, tools: dict[str, callable], verbose: bool = False) -> 
                         print(f"  Citations: {obs_citations[:5]}")
                     print(f"  Observation (trunc): {observation[:300]}")
             else:
-                error_msg = f"Unknown tool '{action}'. Available: search_laws, search_courts"
+                error_msg = f"Unknown tool '{action}'. Available: {', '.join(sorted(tools))}"
                 observations.append(f"Tool {action_lower}: {error_msg}")
                 logs.append({
                     "type": "tool_error",

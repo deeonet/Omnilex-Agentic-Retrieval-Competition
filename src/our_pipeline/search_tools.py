@@ -1,7 +1,8 @@
 from our_pipeline.constants import CONFIG
 from our_pipeline.bm25.corpus import BM25Index
-from our_pipeline.bm25.llm.keywords import extract_explicit_citations, extract_legal_keywords
-from our_pipeline.bm25.llm.translate import translate_query
+from our_pipeline.llm.keywords import extract_explicit_citations, extract_legal_keywords
+from our_pipeline.llm.translate import translate_query
+from our_pipeline.dense.index import DenseIndex
 
 
 def reciprocal_rank_fusion(
@@ -46,6 +47,46 @@ def reciprocal_rank_fusion(
         doc["_rrf_score"] = scores[doc[citation_field]]
 
     return fused[:top_k] if top_k is not None else fused
+
+
+def retrieve_union(
+    query: str,
+    tools: dict,
+    top_k: int | None = None,
+    rrf_k: int = 60,
+) -> list[str]:
+    """Run every tool on the query and return their RRF-fused, deduped citations.
+
+    Recall-first alternative to the ReAct agent: instead of letting the LLM curate a
+    narrow ``Final Answer``, every registered tool is searched directly and their
+    ranked hit lists are fused with Reciprocal Rank Fusion. Deterministic, and every
+    tool — including both dense tools — is guaranteed to contribute.
+
+    Args:
+        query: The user's query (each tool applies its own expansion/translation/embedding).
+        tools: Tool registry (name -> callable tool with ``get_last_citations``).
+        top_k: Cap on returned citations after fusion (None keeps all).
+        rrf_k: Reciprocal Rank Fusion constant.
+
+    Returns:
+        Fused citation strings, best-first, trimmed to ``top_k``.
+    """
+    ranked_lists: list[list[dict]] = []
+    for tool in tools.values():
+        try:
+            tool(query)  # populates the tool's _last_results
+            cites = tool.get_last_citations()
+        except Exception:  # noqa: BLE001 - one failing tool (e.g. dense OOM) must not kill the query
+            cites = []
+        if cites:
+            # Wrap as minimal docs; list order is the tool's rank order, which is all RRF needs.
+            ranked_lists.append([{"citation": c} for c in cites])
+
+    if not ranked_lists:
+        return []
+
+    fused = reciprocal_rank_fusion(ranked_lists, k=rrf_k, top_k=top_k)
+    return [doc["citation"] for doc in fused]
 
 
 class LawSearchTool:
@@ -184,6 +225,93 @@ Example queries: "contract formation requirements", "Vertragsabschluss", "divorc
                 results.append(doc)
 
         return results[: self.top_k]
+
+    def get_last_citations(self) -> list[str]:
+        """Return citations from the last search.
+
+        Returns:
+            List of citation strings from the most recent search
+        """
+        return [doc.get("citation", "") for doc in self._last_results if doc.get("citation")]
+
+
+class DenseSearchTool:
+    """Tool for semantic (dense embedding) search over a legal corpus.
+
+    One class serves both corpora: name/description are instance-level and the
+    behavior is fixed by the DenseIndex it wraps. Embeddings are multilingual,
+    so no query translation or keyword extraction is needed — natural-language
+    queries match semantically related passages directly.
+    """
+
+    def __init__(
+        self,
+        index: DenseIndex,
+        name: str,
+        description: str,
+        top_k: int = 5,
+        max_excerpt_length: int = 300,
+    ):
+        """Initialize dense search tool.
+
+        Args:
+            index: DenseIndex for the corpus this instance searches
+            name: Tool name the agent calls (e.g. "dense_search_laws")
+            description: Tool description shown in the agent prompt
+            top_k: Number of results to return
+            max_excerpt_length: Maximum characters for text excerpts
+        """
+        self.index = index
+        self.name = name
+        self.description = description
+        self.top_k = top_k
+        self.max_excerpt_length = max_excerpt_length
+        self._last_results: list[dict] = []
+
+    def __call__(self, query: str) -> str:
+        """Execute search and return formatted results.
+
+        Args:
+            query: Search query string
+
+        Returns:
+            Formatted string with search results
+        """
+        return self.run(query)
+
+    def run(self, query: str) -> str:
+        """Execute search and return formatted results.
+
+        Args:
+            query: Search query string
+
+        Returns:
+            Formatted string with search results
+        """
+        if not query or not query.strip():
+            self._last_results = []
+            return "Error: Empty query. Please provide search terms."
+
+        self._last_results = self.index.search(
+            query,
+            top_k=self.top_k,
+            over_retrieve=CONFIG.get("dense_over_retrieve", 4),
+        )
+
+        if not self._last_results:
+            return f"No relevant documents found for: '{query}'"
+
+        formatted = []
+        for doc in self._last_results:
+            citation = doc.get("citation", "Unknown")
+            text = doc.get("text", "")
+
+            if len(text) > self.max_excerpt_length:
+                text = text[: self.max_excerpt_length] + "..."
+
+            formatted.append(f"- {citation}: {text}")
+
+        return "\n".join(formatted)
 
     def get_last_citations(self) -> list[str]:
         """Return citations from the last search.

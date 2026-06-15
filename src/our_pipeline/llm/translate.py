@@ -6,7 +6,7 @@ import logging
 import re
 
 from our_pipeline.constants import CONFIG
-from our_pipeline.bm25.llm.load_llm import llm
+from our_pipeline.llm.load_llm import llm
 
 logger = logging.getLogger(__name__)
 

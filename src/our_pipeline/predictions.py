@@ -1,22 +1,37 @@
 from tqdm import tqdm
 import pandas as pd
-from our_pipeline.bm25.llm.define_agent import run_agent
+from our_pipeline.llm.define_agent import run_agent
+from our_pipeline.constants import CONFIG
+from our_pipeline.search_tools import retrieve_union
 
 def generate_predictions(test_df: pd.DataFrame, TOOLS) -> pd.DataFrame:
     predictions = []
     all_logs = []  # Store logs for all queries
 
-    for _, row in tqdm(test_df.iterrows(), total=len(test_df), desc="Running agent"):
+    mode = CONFIG.get("retrieval_mode", "agent")
+    desc = "Retrieving (union)" if mode == "recall_union" else "Running agent"
+
+    for _, row in tqdm(test_df.iterrows(), total=len(test_df), desc=desc):
         query_id = row["query_id"]
         query_text = row["query"]
 
-        # Run agent. Guard per-query so a transient API failure (e.g. a 500 that
-        # survives client retries) yields empty predictions for this query instead
-        # of aborting the whole batch.
+        # Guard per-query so a transient failure (e.g. an API 500 that survives client
+        # retries, or a tool error) yields empty predictions for this query instead of
+        # aborting the whole batch.
         try:
-            raw_citations, logs = run_agent(query_text, tools=TOOLS, verbose=False)
+            if mode == "recall_union":
+                # Recall-first: directly fuse every tool's hits (no LLM curation step).
+                raw_citations = retrieve_union(
+                    query_text,
+                    TOOLS,
+                    top_k=CONFIG.get("max_predictions"),
+                    rrf_k=CONFIG.get("rrf_k", 60),
+                )
+                logs = [{"type": "recall_union", "n_citations": len(raw_citations)}]
+            else:
+                raw_citations, logs = run_agent(query_text, tools=TOOLS, verbose=False)
         except Exception as exc:  # noqa: BLE001 - one failed query must not kill the run
-            print(f"  ! run_agent failed for {query_id}: {exc}")
+            print(f"  ! prediction failed for {query_id}: {exc}")
             raw_citations, logs = [], [{"type": "error", "error": str(exc)}]
 
         # Store logs with query_id

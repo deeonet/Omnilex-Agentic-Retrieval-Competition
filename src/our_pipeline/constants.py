@@ -8,7 +8,9 @@ FORCE_REBUILD_INDICES = False
 
 
 # Local development paths
-REPO_ROOT = Path(".").resolve()
+# Resolved from this file's location (src/our_pipeline/constants.py) so that
+# batch jobs launched from any working directory find the same artifacts.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_PATH = REPO_ROOT / "data" / "raw"
 MODEL_PATH = REPO_ROOT / "models"
 OUTPUT_PATH = REPO_ROOT / "output"
@@ -21,6 +23,14 @@ COURTS_CSV = DATA_PATH / "court_considerations.csv"
 # Index cache paths
 LAWS_INDEX_PATH = INDEX_PATH / "laws_index.pkl"
 COURTS_INDEX_PATH = INDEX_PATH / "courts_index.pkl"
+
+# Dense (embedding) index artifacts, built by our_pipeline.dense.build_embeddings
+DENSE_DIR = INDEX_PATH / "dense"
+DENSE_SHARDS_DIR = DENSE_DIR / "shards"
+LAWS_FAISS_PATH = DENSE_DIR / "laws.faiss"
+LAWS_DENSE_META_PATH = DENSE_DIR / "laws_meta.parquet"
+COURTS_FAISS_PATH = DENSE_DIR / "courts.faiss"
+COURTS_DENSE_META_PATH = DENSE_DIR / "courts_meta.parquet"
 
 # Derived paths based on DATASET_MODE
 QUERY_FILE = DATA_PATH / f"{DATASET_MODE}.csv"
@@ -46,8 +56,16 @@ CONFIG = {
     "max_conversation_chars": 28000,  # Safety net: truncate if conversation exceeds this
     
     # Retrieval settings
-    "top_k_laws": 40,       # Results per law search
-    "top_k_courts": 40,     # Results per court search
+    # How predictions are produced per query:
+    #   "recall_union" - directly call ALL tools and return their RRF-fused union
+    #                    (recall-first; deterministic; guarantees every tool incl. dense contributes)
+    #   "agent"        - ReAct agent returns only its curated "Final Answer" set (precision-first)
+    "retrieval_mode": "recall_union",
+    # Cap on citations returned per query after RRF fusion (recall_union mode).
+    # Set to None to measure the uncapped recall ceiling of the retrievers.
+    "max_predictions": 160,
+    "top_k_laws": 30,       # Results per law search
+    "top_k_courts": 30,     # Results per court search
     "enable_multilingual_search": True,  # Court tool only: translate to EN/DE/FR/IT (corpus is multilingual)
     "translation_model": "qwen3-30b-a3b-instruct-2507",  # non-reasoning instruct model
 
@@ -61,6 +79,17 @@ CONFIG = {
     # fused with Reciprocal Rank Fusion). When False, search the raw query directly.
     "law_query_expansion": True,
     "rrf_k": 60,                    # Reciprocal Rank Fusion constant
+
+    # Dense retrieval (Qwen3-Embedding-4B + FAISS; build offline with
+    # our_pipeline.dense.build_embeddings, see scripts/embed_corpus.sbatch)
+    "embed_model": "Qwen/Qwen3-Embedding-4B",
+    "embed_dim": 2560,              # Native output dim (MRL allows truncation on rebuild)
+    "top_k_dense_laws": 50,         # Results per dense law search
+    "top_k_dense_courts": 50,       # Results per dense court search
+    "dense_over_retrieve": 4,       # Over-retrieval factor before dedup by citation
+    "embed_batch_size": 64,         # Encode batch size during the offline build
+    "embed_max_seq_laws": 2048,     # Token cap per law article during the build
+    "embed_max_seq_courts": 1024,   # Token cap per court consideration during the build
 
     # Paths
     "test_file": "test.csv",
