@@ -13,6 +13,9 @@ graphrag/input/
 
 graphrag/.env
 
+# LightRAG generated index (large, reproducible from indexing)
+lightrag/
+
 # C extensions
 *.so
 
