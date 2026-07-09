@@ -91,6 +91,17 @@ CONFIG = {
     "embed_max_seq_laws": 2048,     # Token cap per law article during the build
     "embed_max_seq_courts": 1024,   # Token cap per court consideration during the build
 
+    # Reranking (Qwen3-Reranker-4B CrossEncoder; filters the fused union for precision).
+    # Each retrieved citation's full document text is scored against the query, the raw
+    # logit is squashed to a [0,1] confidence (sigmoid), and only citations clearing the
+    # threshold are kept. Trades recall for precision -> tune on val to maximize F1.
+    "enable_reranking": True,
+    "reranker_model": "Qwen/Qwen3-Reranker-4B",
+    "reranker_threshold": 0.5,      # Keep citations with sigmoid confidence >= this (TUNE on val)
+    "reranker_min_keep": 10,         # Recall floor: if nothing clears the threshold, keep this many top-scored
+    "reranker_batch_size": 32,      # Pairs per CrossEncoder.predict batch
+    "reranker_max_length": 1024,    # Token cap per (query, document) pair (court texts are long)
+
     # Paths
     "test_file": "test.csv",
 }

@@ -3,8 +3,9 @@ import pandas as pd
 from our_pipeline.llm.define_agent import run_agent
 from our_pipeline.constants import CONFIG
 from our_pipeline.search_tools import retrieve_union
+from our_pipeline.rerank import get_reranker
 
-def generate_predictions(test_df: pd.DataFrame, TOOLS) -> pd.DataFrame:
+def generate_predictions(test_df: pd.DataFrame, TOOLS, text_lookup=None) -> pd.DataFrame:
     predictions = []
     all_logs = []  # Store logs for all queries
 
@@ -33,6 +34,18 @@ def generate_predictions(test_df: pd.DataFrame, TOOLS) -> pd.DataFrame:
         except Exception as exc:  # noqa: BLE001 - one failed query must not kill the run
             print(f"  ! prediction failed for {query_id}: {exc}")
             raw_citations, logs = [], [{"type": "error", "error": str(exc)}]
+
+        # Precision filter: keep only citations the reranker is confident about. Applied
+        # after fusion/agent so it benefits both modes; a reranker failure leaves the
+        # un-reranked citations untouched rather than dropping the query.
+        if CONFIG.get("enable_reranking") and text_lookup is not None and raw_citations:
+            n_before = len(raw_citations)
+            try:
+                raw_citations = get_reranker().rerank(query_text, raw_citations, text_lookup)
+                logs.append({"type": "rerank", "n_before": n_before, "n_after": len(raw_citations)})
+            except Exception as exc:  # noqa: BLE001 - reranker failure must not drop the query
+                print(f"  ! rerank failed for {query_id}: {exc}")
+                logs.append({"type": "rerank_error", "error": str(exc)})
 
         # Store logs with query_id
         all_logs.append({

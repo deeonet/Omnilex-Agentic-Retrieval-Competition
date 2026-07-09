@@ -19,6 +19,7 @@ from our_pipeline.constants import (
 )
 from our_pipeline.bm25.corpus import get_or_build_index, get_query_file
 from our_pipeline.dense.index import DenseIndex
+from our_pipeline.rerank import make_citation_text_lookup
 from our_pipeline.search_tools import CourtSearchTool, DenseSearchTool, LawSearchTool
 from our_pipeline.validation import validate_and_score_submission
 from our_pipeline.predictions import generate_predictions
@@ -136,7 +137,11 @@ query_file = get_query_file()
 test_df = pd.read_csv(query_file)
 print(f"Loaded queries from: {query_file}")
 
-predictions_df = generate_predictions(test_df, TOOLS)
+# Citation -> full document text, used by the reranker to score (query, document) pairs.
+# Laws first, then courts (citation formats don't collide, but order is deterministic).
+text_lookup = make_citation_text_lookup(laws_index, courts_index)
+
+predictions_df = generate_predictions(test_df, TOOLS, text_lookup=text_lookup)
 
 # Save submission
 submission_path = OUTPUT_PATH / f"submission{str(datetime.now().strftime('%d-%m_%H-%M'))}.csv"
