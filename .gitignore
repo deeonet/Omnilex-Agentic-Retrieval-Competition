@@ -5,6 +5,8 @@ __pycache__/
 
 data/
 
+slurm-*
+
 # GraphRAG generated outputs (large, reproducible from indexing)
 graphrag/output/
 graphrag/cache/

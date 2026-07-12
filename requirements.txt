@@ -8,9 +8,12 @@ pydantic>=2.0.0
 llama-cpp-python>=0.2.0
 openai>=1.0.0
 python-dotenv>=1.0.0
+sentence-transformers
 
 # Retrieval
 rank-bm25>=0.2.2
+faiss-cpu>=1.7.4
+cohere>=5.0.0
 
 # Data
 datasets>=2.14.0
@@ -27,3 +30,13 @@ tqdm>=4.65.0
 
 kagglehub>=0.1.0
 graphrag
+
+# LightRAG graph retrieval (HKUDS) + local model serving for Qwen.
+# vllm 0.7.3 pins torch==2.5.1 (matches the existing env); newer vllm forces
+# torch>=2.6 and would break the BM25/dense pipeline — do not bump unbounded.
+# transformers must stay <5: vllm 0.7.3 uses tokenizer.all_special_tokens_extended,
+# which transformers 5.x removed (crashes vLLM at tokenizer init). 4.57.x satisfies
+# vllm (>=4.48.2) and sentence-transformers (>=4.41,<6).
+lightrag-hku>=1.5.3
+vllm==0.7.3
+transformers>=4.48.2,<5
