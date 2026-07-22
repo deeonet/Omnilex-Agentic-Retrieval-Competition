@@ -28,9 +28,20 @@ class OpenAICompatibleLLM:
         api_key: str,
         base_url: str = DEFAULT_BASE_URL,
         model: str = DEFAULT_MODEL,
+        max_retries: int = 3,
     ) -> None:
+        """Create an API-backed LLM.
+
+        Args:
+            api_key: API key for the OpenAI-compatible service.
+            base_url: Base URL of the service.
+            model: Model name to request.
+            max_retries: Automatic retries for transient API errors (5xx/429/timeouts).
+                The endpoint returns sporadic 500s, so a few backoff retries keep a
+                multi-query run from dying on a single transient failure.
+        """
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=max_retries)
 
     def __call__(
         self,

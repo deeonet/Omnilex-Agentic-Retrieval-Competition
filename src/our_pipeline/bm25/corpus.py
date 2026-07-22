@@ -1,15 +1,59 @@
 import os
-import pickle
-import re
-from pathlib import Path
 
 import numpy as np
-import pandas as pd
 from dotenv import load_dotenv
-from rank_bm25 import BM25Okapi
-from tqdm.auto import tqdm
+# from tqdm.auto import tqdm
 
-from constants import QUERY_FILE
+#from constants import QUERY_FILE
+import pickle
+import re
+from functools import lru_cache
+from pathlib import Path
+
+import pandas as pd
+from rank_bm25 import BM25Okapi
+from tqdm.notebook import tqdm
+
+from our_pipeline.constants import CONFIG, QUERY_FILE
+
+# Curated German + legal-filler stopwords. Kept inline so tokenization needs no
+# external corpus download (nltk/spacy are not installed in this environment).
+_STOPWORDS: frozenset[str] = frozenset(
+    """
+    aber alle allem allen aller alles als also am an ander andere anderem anderen
+    anderer anderes anderm andern anderr anders auch auf aus bei bin bis bist da
+    damit dann der den des dem die das dass daß derselbe derselben denselben
+    desselben demselben dieselbe dieselben dasselbe dazu dein deine deinem deinen
+    deiner deines denn derer dessen dich dir du dies diese diesem diesen dieser
+    dieses doch dort durch ein eine einem einen einer eines einig einige einigem
+    einigen einiger einiges einmal er ihn ihm es etwas euer eure eurem euren eurer
+    eures für gegen gewesen hab habe haben hat hatte hatten hier hin hinter ich
+    mich mir ihr ihre ihrem ihren ihrer ihres euch im in indem ins ist jede jedem
+    jeden jeder jedes jene jenem jenen jener jenes jetzt kann kein keine keinem
+    keinen keiner keines können könnte machen man manche manchem manchen mancher
+    manches mein meine meinem meinen meiner meines mit muss musste nach nicht
+    nichts noch nun nur ob oder ohne sehr sein seine seinem seinen seiner seines
+    selbst sich sie ihnen sind so solche solchem solchen solcher solches soll
+    sollte sondern sonst über um und uns unse unsem unsen unser unses unter viel
+    vom von vor während war waren warst was weg weil weiter welche welchem welchen
+    welcher welches wenn werde werden wie wieder will wir wird wirst wo wollen
+    wollte würde würden zu zum zur zwar zwischen
+    bzw sowie gemäss gemäß dabei jedoch sowohl insbesondere bzgl ggf etc
+    """.split()
+)
+
+try:  # Snowball German stemmer is optional; tokenization degrades gracefully without it.
+    import snowballstemmer
+
+    _STEMMER = snowballstemmer.stemmer("german")
+except Exception:  # pragma: no cover - exercised only when the package is missing
+    _STEMMER = None
+
+
+@lru_cache(maxsize=500_000)
+def _stem(token: str) -> str:
+    """Stem a single token via Snowball (cached); identity if stemmer unavailable."""
+    return _STEMMER.stemWord(token) if _STEMMER is not None else token
 
 
 class BM25Index:
@@ -37,15 +81,40 @@ class BM25Index:
         self.documents: list[dict] = []
         self.index: BM25Okapi | None = None
         self._tokenized_corpus: list[list[str]] = []
+        self._citation_to_doc: dict[str, dict] = {}
 
         if documents:
             self.build(documents)
 
+    @staticmethod
+    def _citation_key(citation: str) -> str:
+        """Whitespace-normalized key for exact citation lookup."""
+        return re.sub(r"\s+", " ", citation).strip()
+
+    def _build_citation_map(self) -> None:
+        """Index documents by exact citation for direct (non-BM25) lookup."""
+        self._citation_to_doc = {
+            self._citation_key(doc.get(self.citation_field, "")): doc
+            for doc in self.documents
+            if doc.get(self.citation_field)
+        }
+
+    def get_by_citation(self, citation: str) -> dict | None:
+        """Return the document whose citation exactly matches ``citation`` (or None).
+
+        Used to guarantee retrieval of articles a query names outright, which BM25
+        ranks unreliably because citation tokens have little discriminative weight.
+        """
+        return self._citation_to_doc.get(self._citation_key(citation))
+
     def tokenize(self, text: str) -> list[str]:
         """Tokenize text for BM25 indexing.
 
-        Simple whitespace + lowercase tokenization.
-        Can be overridden for language-specific tokenization.
+        Lowercase + non-word split, then optionally drop German/legal stopwords and
+        apply Snowball German stemming (both gated by CONFIG). The exact same path is
+        used for corpus documents and queries, so they stay consistent by construction.
+
+        NOTE: changing the stopword/stemming flags requires rebuilding the index.
 
         Args:
             text: Text to tokenize
@@ -53,11 +122,30 @@ class BM25Index:
         Returns:
             List of tokens
         """
-        # Lowercase and split on non-alphanumeric characters
         text = text.lower()
-        tokens = re.split(r"\W+", text)
-        # Filter empty tokens
-        return [t for t in tokens if t]
+        tokens = [t for t in re.split(r"\W+", text) if t]
+
+        if CONFIG.get("bm25_remove_stopwords", True):
+            tokens = [t for t in tokens if t not in _STOPWORDS]
+
+        if CONFIG.get("bm25_use_stemming", True):
+            tokens = [_stem(t) for t in tokens]
+
+        return tokens
+
+    def _searchable_text(self, doc: dict) -> str:
+        """Compose the text that gets indexed for a document.
+
+        Includes the citation and title (when present) alongside the body so that
+        explicit article references and law-code tokens in a query can match the
+        right provision. ``doc[text_field]`` itself is left untouched for display.
+        """
+        parts = [
+            doc.get(self.citation_field, ""),
+            doc.get("title", ""),
+            doc.get(self.text_field, ""),
+        ]
+        return " ".join(p for p in parts if p)
 
     def build(self, documents: list[dict]) -> None:
         """Build BM25 index from documents.
@@ -67,15 +155,16 @@ class BM25Index:
         """
         self.documents = documents
 
-        # Tokenize all documents
-        self._tokenized_corpus = []
-        for doc in documents:
-            text = doc.get(self.text_field, "")
-            tokens = self.tokenize(text)
-            self._tokenized_corpus.append(tokens)
+        # Tokenize the searchable blob (citation + title + text) for each document
+        self._tokenized_corpus = [self.tokenize(self._searchable_text(doc)) for doc in documents]
 
-        # Build BM25 index
-        self.index = BM25Okapi(self._tokenized_corpus)
+        # Build BM25 index with tunable parameters
+        self.index = BM25Okapi(
+            self._tokenized_corpus,
+            k1=CONFIG.get("bm25_k1", 1.5),
+            b=CONFIG.get("bm25_b", 0.75),
+        )
+        self._build_citation_map()
 
     def search(
         self,
@@ -161,7 +250,12 @@ class BM25Index:
         )
         instance.documents = data["documents"]
         instance._tokenized_corpus = data["tokenized_corpus"]
-        instance.index = BM25Okapi(instance._tokenized_corpus)
+        instance.index = BM25Okapi(
+            instance._tokenized_corpus,
+            k1=CONFIG.get("bm25_k1", 1.5),
+            b=CONFIG.get("bm25_b", 0.75),
+        )
+        instance._build_citation_map()
 
         return instance
 
@@ -198,10 +292,14 @@ def load_csv_corpus(
             for _, row in chunk.iterrows():
                 if max_rows and rows_loaded >= max_rows:
                     break
-                documents.append({
+                doc = {
                     "citation": str(row["citation"]),
-                    "text": str(row["text"]) if pd.notna(row["text"]) else ""
-                })
+                    "text": str(row["text"]) if pd.notna(row["text"]) else "",
+                }
+                # Laws have a title column; court decisions do not.
+                if "title" in chunk.columns and pd.notna(row["title"]):
+                    doc["title"] = str(row["title"])
+                documents.append(doc)
                 rows_loaded += 1
             pbar.update(min(len(chunk), total_rows - pbar.n))
             if max_rows and rows_loaded >= max_rows:

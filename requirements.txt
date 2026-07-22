@@ -12,8 +12,9 @@ sentence-transformers
 
 # Retrieval
 rank-bm25>=0.2.2
-faiss-cpu>=1.7.4
-cohere>=5.0.0
+# Dense retrieval (torch is installed manually to match the cluster CUDA version)
+faiss-cpu>=1.9
+sentence-transformers>=5.0
 
 # Data
 datasets>=2.14.0
