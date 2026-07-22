@@ -3,16 +3,15 @@
 #
 # Usage:
 #   mkdir -p logs
-#   sbatch scripts/pipeline_test.sbatch
+#   sbatch scripts/run_pipeline.sbatch
 #
 #SBATCH --job-name=pipeline_test
 #SBATCH --account=kisski-aai-ss26
 #SBATCH --partition=kisski
-#SBATCH --qos=2h
-#SBATCH --time=02:00:00
+#SBATCH --time=06:00:00
 #SBATCH -G A100:4
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=400G
+#SBATCH --mem=450G
 #SBATCH --constraint=inet
 #SBATCH --output=logs/pipeline_test/pipeline_test_%j.out
 #SBATCH --error=logs/pipeline_test/pipeline_test_%j.err
