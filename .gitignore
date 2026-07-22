@@ -4,6 +4,20 @@ __pycache__/
 *$py.class
 
 data/
+logs/
+
+slurm-*
+
+# GraphRAG generated outputs (large, reproducible from indexing)
+graphrag/output/
+graphrag/cache/
+graphrag/logs/
+graphrag/input/
+
+graphrag/.env
+
+# LightRAG generated index (large, reproducible from indexing)
+lightrag/
 
 # C extensions
 *.so
@@ -210,6 +224,7 @@ __marimo__/
 
 # AI Coding
 CLAUDE.md
+AGENTS.md
 .claude/
 
 # Competition data files
@@ -226,3 +241,6 @@ output/
 models/
 *.gguf
 *.bin
+
+# other
+**/.DS_Store
