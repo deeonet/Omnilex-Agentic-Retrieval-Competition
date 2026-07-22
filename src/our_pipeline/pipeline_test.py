@@ -1,21 +1,24 @@
 import pandas as pd
-from our_pipeline.constants import (
+from constants import (
     CONFIG,
     COURTS_CSV,
+    COURTS_DENSE_INDEX_DIR,
     COURTS_INDEX_PATH,
     DATASET_MODE,
     FORCE_REBUILD_INDICES,
+    FORCE_REBUILD_DENSE,
     INDEX_PATH,
     IS_VALIDATION_MODE,
     LAWS_CSV,
+    LAWS_DENSE_INDEX_DIR,
     LAWS_INDEX_PATH,
     OUTPUT_PATH,
     QUERY_FILE,
 )
-from our_pipeline.corpus import get_or_build_index, get_query_file
-from our_pipeline.search_tools import CourtSearchTool, LawSearchTool
-from our_pipeline.validation import validate_and_score_submission
-from our_pipeline.predictions import generate_predictions
+from corpus import get_or_build_index, get_or_build_dense_index, get_query_file
+from search_tools import CourtSearchTool, HybridSearchTool, LawSearchTool
+from validation import validate_and_score_submission
+from predictions import generate_predictions, save_run_logs
 
 # === CONFIGURATION ===
 
@@ -57,18 +60,68 @@ courts_index = get_or_build_index(
     # max_rows=100000  # Change to use bigger corpus
 )
 
-# Create tools
-law_tool = LawSearchTool(
-    index=laws_index,
-    top_k=CONFIG["top_k_laws"],
-    max_excerpt_length=300,
-)
+# Build dense indices and create hybrid tools when enabled
+if CONFIG.get("enable_hybrid_search", False):
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
 
-court_tool = CourtSearchTool(
-    index=courts_index,
-    top_k=CONFIG["top_k_courts"],
-    max_excerpt_length=300,
-)
+    _embed_key = os.getenv("API_KEY")
+    _embed_base = CONFIG.get("embedding_api_base", "https://chat-ai.academiccloud.de/v1")
+    _embed_model = CONFIG.get("embedding_model", "e5-mistral-7b-instruct")
+    _embed_batch = CONFIG.get("embedding_batch_size", 32)
+
+    laws_dense = get_or_build_dense_index(
+        name="laws",
+        csv_path=LAWS_CSV,
+        index_dir=LAWS_DENSE_INDEX_DIR,
+        force_rebuild=FORCE_REBUILD_INDICES or FORCE_REBUILD_DENSE,
+        max_rows=CONFIG.get("max_docs_dense_laws"),
+        model=_embed_model,
+        api_key=_embed_key,
+        api_base=_embed_base,
+        batch_size=_embed_batch,
+    )
+
+    courts_dense = get_or_build_dense_index(
+        name="courts",
+        csv_path=COURTS_CSV,
+        index_dir=COURTS_DENSE_INDEX_DIR,
+        force_rebuild=FORCE_REBUILD_INDICES or FORCE_REBUILD_DENSE,
+        max_rows=CONFIG.get("max_docs_dense_courts", 200_000),
+        model=_embed_model,
+        api_key=_embed_key,
+        api_base=_embed_base,
+        batch_size=_embed_batch,
+    )
+
+    law_tool = HybridSearchTool(
+        bm25_index=laws_index,
+        dense_index=laws_dense,
+        corpus_type="laws",
+        top_k=CONFIG["top_k_laws"],
+        max_excerpt_length=300,
+    )
+    court_tool = HybridSearchTool(
+        bm25_index=courts_index,
+        dense_index=courts_dense,
+        corpus_type="courts",
+        top_k=CONFIG["top_k_courts"],
+        max_excerpt_length=300,
+    )
+    print("Hybrid retrieval enabled (BM25 + Dense + RRF + Cohere Rerank)")
+else:
+    law_tool = LawSearchTool(
+        index=laws_index,
+        top_k=CONFIG["top_k_laws"],
+        max_excerpt_length=300,
+    )
+    court_tool = CourtSearchTool(
+        index=courts_index,
+        top_k=CONFIG["top_k_courts"],
+        max_excerpt_length=300,
+    )
+    print("BM25-only retrieval (set enable_hybrid_search=True for hybrid mode)")
 
 # Tool registry
 TOOLS = {
@@ -87,7 +140,43 @@ query_file = get_query_file()
 test_df = pd.read_csv(query_file)
 print(f"Loaded queries from: {query_file}")
 
-predictions_df = generate_predictions(test_df, TOOLS)
+# Build court sibling-consideration index (decision -> all its considerations)
+sibling_index = None
+if CONFIG.get("enable_sibling_expansion", True):
+    from expand import build_court_sibling_index
+
+    sibling_index = build_court_sibling_index(courts_index.documents)
+    print(
+        f"Sibling-consideration index: {len(sibling_index):,} court decisions "
+        f"from {len(courts_index.documents):,} considerations"
+    )
+
+# Evaluation agent (LQ-RAG precision filter over the recall-maximised pool)
+eval_agent = None
+if CONFIG.get("enable_eval_agent", False):
+    from llm.evaluate_agent import EvaluationAgent
+
+    # citation -> text lookup spanning both corpora (covers sibling-expanded hits)
+    cite2text: dict[str, str] = {}
+    for doc in laws_index.documents:
+        c = doc.get("citation")
+        if c and c not in cite2text:
+            cite2text[c] = doc.get("text", "")
+    for doc in courts_index.documents:
+        c = doc.get("citation")
+        if c and c not in cite2text:
+            cite2text[c] = doc.get("text", "")
+
+    eval_agent = EvaluationAgent(cite2text=cite2text)
+    print(f"Evaluation agent enabled (model={CONFIG.get('eval_model')}, "
+          f"cite2text={len(cite2text):,} entries)")
+
+predictions_df, all_logs = generate_predictions(
+    test_df, TOOLS, sibling_index=sibling_index, eval_agent=eval_agent
+)
+
+# Persist per-query retrieval logs for debugging recall (decomposition + searches)
+save_run_logs(all_logs, OUTPUT_PATH / "run_logs.jsonl")
 
 # Save submission
 submission_path = OUTPUT_PATH / "submission.csv"

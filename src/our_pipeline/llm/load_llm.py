@@ -1,9 +1,8 @@
-"""OpenAI-compatible LLM adapter for the local retrieval pipeline.
+"""LLM loader for the local retrieval pipeline.
 
-The agent code was written against ``llama-cpp-python``, whose model object is
-called like a function and returns ``{"choices": [{"text": "..."}]}``.  This
-module keeps that small interface intact while sending requests to the API used
-in ``test.py``.
+Tries to load a local GGUF model via llama-cpp-python first; falls back to the
+OpenAI-compatible API if the GGUF file is not present.  Both backends expose the
+same callable interface: ``response["choices"][0]["text"]``.
 """
 
 from __future__ import annotations
@@ -13,6 +12,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from constants import CONFIG, MODEL_PATH
 
 
 DEFAULT_BASE_URL = "https://chat-ai.academiccloud.de/v1"
@@ -28,13 +29,6 @@ class OpenAICompatibleLLM:
         base_url: str = DEFAULT_BASE_URL,
         model: str = DEFAULT_MODEL,
     ) -> None:
-        """Create an API-backed LLM.
-
-        Args:
-            api_key: API key for the OpenAI-compatible service.
-            base_url: Base URL of the service.
-            model: Model name to request.
-        """
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
 
@@ -47,20 +41,6 @@ class OpenAICompatibleLLM:
         model: str | None = None,
         **kwargs: Any,
     ) -> dict[str, list[dict[str, str]]]:
-        """Generate text from a raw prompt using chat completions.
-
-        Args:
-            prompt: Full agent prompt/conversation string.
-            max_tokens: Maximum tokens to generate.
-            temperature: Sampling temperature.
-            stop: Optional stop sequences.
-            model: Optional per-call model override; defaults to the instance model.
-            **kwargs: Additional API arguments forwarded to chat completions.
-
-        Returns:
-            A llama-cpp-style response with generated text at
-            ``response["choices"][0]["text"]``.
-        """
         completion = self.client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model=model or self.model,
@@ -73,22 +53,31 @@ class OpenAICompatibleLLM:
         return {"choices": [{"text": text}]}
 
 
-def load_llm() -> OpenAICompatibleLLM:
-    """Load the API-backed LLM using values from ``.env``.
+def load_llm():
+    """Load the LLM — local GGUF if available, otherwise API.
 
-    Expected environment variables:
-        API_KEY: Required API key.
-        API_BASE_URL: Optional API base URL.
-        API_MODEL: Optional model name.
-
-    Returns:
-        Configured API-backed LLM adapter.
-
-    Raises:
-        RuntimeError: If ``API_KEY`` is missing.
+    Local path: ``MODEL_PATH / CONFIG["model_file"]``
+    Falls back to environment variables API_KEY / API_BASE_URL / API_MODEL.
     """
-    load_dotenv()
+    model_file = CONFIG.get("model_file", "")
+    gguf_path = MODEL_PATH / model_file if model_file else None
 
+    if gguf_path and gguf_path.exists():
+        from llama_cpp import Llama
+
+        print(f"Loading local GGUF: {gguf_path}")
+        lm = Llama(
+            model_path=str(gguf_path),
+            n_ctx=CONFIG.get("n_ctx", 8192),
+            n_threads=CONFIG.get("n_threads", 4),
+            n_gpu_layers=CONFIG.get("n_gpu_layers", -1),
+            verbose=False,
+        )
+        print("Local GGUF model loaded.")
+        return lm
+
+    # Fall back to remote API
+    load_dotenv()
     api_key = os.getenv("API_KEY")
     if not api_key:
         raise RuntimeError("Missing API_KEY. Add API_KEY=... to your .env file.")
@@ -99,7 +88,6 @@ def load_llm() -> OpenAICompatibleLLM:
     print(f"Loading API model: {model}")
     llm_client = OpenAICompatibleLLM(api_key=api_key, base_url=base_url, model=model)
     print("API model client loaded successfully!")
-
     return llm_client
 
 

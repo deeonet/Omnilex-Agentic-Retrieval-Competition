@@ -1,7 +1,7 @@
 import re
-from our_pipeline.llm.load_llm import llm
-from our_pipeline.llm.prompts import AGENT_SYSTEM_PROMPT
-from our_pipeline.constants import CONFIG
+from constants import CONFIG
+from expand import expand_court_siblings
+from llm.decompose import decompose_query
 
 
 def parse_all_agent_actions(response: str) -> list[tuple[str, str]]:
@@ -138,179 +138,159 @@ def truncate_conversation(conversation: str, max_chars: int) -> str:
     return system_part + rest
 
 
-def run_agent(query: str, tools: dict[str, callable], verbose: bool = False) -> tuple[list[str], list[dict]]:
-    """Run ReAct agent to retrieve citations.
-    
+def _tool_targets(issue_type: str | None) -> list[str]:
+    """Map a decomposed issue 'type' to the search tools to invoke."""
+    t = (issue_type or "both").lower()
+    if t == "law":
+        return ["search_laws"]
+    if t == "court":
+        return ["search_courts"]
+    return ["search_laws", "search_courts"]
+
+
+def run_agent(
+    query: str,
+    tools: dict[str, callable],
+    verbose: bool = False,
+    sibling_index: dict[str, list[str]] | None = None,
+) -> tuple[list[str], list[dict]]:
+    """Retrieve citations via deterministic query decomposition.
+
+    Pipeline (no ReAct loop):
+      1. Decompose the query into focused legal sub-issues, each with precise
+         German search terms (see ``llm.decompose.decompose_query``).
+      2. For every sub-issue, run the relevant search tool(s) and collect the
+         returned candidate citations into a deduplicated, order-preserving pool.
+      3. Optionally expand court candidates to their sibling considerations
+         (``sibling_index``; turns decision-level hits into exact-consideration
+         hits — see ``expand.expand_court_siblings``).
+      4. Return the candidate pool (the union of all retrieved citations).
+
+    Args:
+        sibling_index: decision -> all-considerations map from
+            ``expand.build_court_sibling_index``. When provided and enabled in
+            CONFIG, court candidates are expanded to sibling considerations.
+
+    No relevance-selection step is applied here yet — that is a separate stage.
+    This stage is about maximising candidate-pool recall; the rich per-search
+    logs let us measure recall@candidates downstream.
+
     Returns:
-        Tuple of (citations, logs) where logs contains detailed execution information
+        Tuple of (citations, logs) where logs contains detailed execution info.
     """
-    # Format with Mistral Instruct tags
-    conversation = f"[INST] {AGENT_SYSTEM_PROMPT}\n\nQuery: {query}\n\nThought: [/INST]"
-    all_citations = []
     logs: list[dict] = []
-    
-    for iteration in range(CONFIG["max_iterations"]):
-        # Truncate conversation if too long to avoid context window overflow
-        max_conv_chars = CONFIG.get("max_conversation_chars", 28000)
-        conversation = truncate_conversation(conversation, max_conv_chars)
-        
-        # Get LLM response with error handling for context overflow
-        try:
-            response = llm(
-                conversation,
-                max_tokens=CONFIG["max_tokens"],
-                temperature=CONFIG["temperature"],
-                stop=["Observation:", "[INST]", "</s>"],
-            )["choices"][0]["text"]
-        except ValueError as e:
-            error_str = str(e).lower()
-            if "exceed context window" in error_str or "requested tokens" in error_str:
-                # Aggressively truncate and retry once
-                conversation = truncate_conversation(conversation, max_chars=20000)
-                try:
-                    response = llm(
-                        conversation,
-                        max_tokens=CONFIG["max_tokens"],
-                        temperature=CONFIG["temperature"],
-                        stop=["Observation:", "[INST]", "</s>"],
-                    )["choices"][0]["text"]
-                except ValueError as retry_error:
-                    # Give up, return citations found so far
-                    logs.append({
-                        "type": "error",
-                        "iteration": iteration + 1,
-                        "error": f"Context overflow after retry: {retry_error}",
-                    })
-                    break
-            else:
-                raise
-        
-        # For subsequent turns, we need to handle the conversation format
-        if iteration == 0:
-            conversation = f"[INST] {AGENT_SYSTEM_PROMPT}\n\nQuery: {query} [/INST]\n\nThought:{response}"
-        else:
-            conversation += response
-        
-        # Log LLM output
+
+    issues = decompose_query(query)
+    if not issues:
+        # Fallback: treat the whole query as a single broad issue across both tools.
+        issues = [
+            {"issue": "full query (decomposition failed)", "de_keywords": query, "type": "both"}
+        ]
+        logs.append({"type": "decompose", "status": "fallback_empty", "issues": issues})
+    else:
+        logs.append({"type": "decompose", "issues_count": len(issues), "issues": issues})
+
+    if verbose:
+        print(f"\nDecomposed into {len(issues)} issue(s):")
+        for it in issues:
+            print(f"  - [{it.get('type')}] {it.get('issue')} :: {it.get('de_keywords')}")
+
+    # Candidate pool: citation -> details (best score kept). Order preserved separately.
+    pool: dict[str, dict] = {}
+    ordered_citations: list[str] = []
+
+    for i, issue in enumerate(issues):
+        keywords = (issue.get("de_keywords") or issue.get("issue") or "").strip()
+        if not keywords:
+            continue
+
+        for tool_name in _tool_targets(issue.get("type")):
+            tool = tools.get(tool_name)
+            if tool is None:
+                continue
+
+            try:
+                observation = tool(keywords)
+            except Exception as exc:  # noqa: BLE001 — one failed search must not kill the query
+                logs.append({
+                    "type": "search_error",
+                    "issue_index": i,
+                    "tool": tool_name,
+                    "query": keywords,
+                    "error": str(exc),
+                })
+                continue
+
+            results = tool.get_last_results() if hasattr(tool, "get_last_results") else []
+            issue_citations: list[str] = []
+            for doc in results:
+                citation = doc.get("citation")
+                if not citation:
+                    continue
+                issue_citations.append(citation)
+                score = doc.get("_score")
+                if citation not in pool:
+                    pool[citation] = {
+                        "citation": citation,
+                        "score": score,
+                        "text": (doc.get("text") or "")[:300],
+                        "source": tool_name,
+                        "issue_index": i,
+                    }
+                    ordered_citations.append(citation)
+                elif score is not None and (
+                    pool[citation]["score"] is None or score > pool[citation]["score"]
+                ):
+                    pool[citation]["score"] = score
+
+            logs.append({
+                "type": "search",
+                "issue_index": i,
+                "issue": issue.get("issue"),
+                "type_target": issue.get("type"),
+                "tool": tool_name,
+                "query": keywords,
+                "citations": issue_citations,
+                "citations_count": len(issue_citations),
+                "observation_trunc": observation[:500] if isinstance(observation, str) else "",
+            })
+
+            if verbose:
+                print(
+                    f"  [issue {i}] {tool_name} '{keywords[:50]}' -> "
+                    f"{len(issue_citations)} citations"
+                )
+
+    # Sibling-consideration expansion: add every consideration of each retrieved
+    # court decision (turns decision-level hits into exact-consideration hits).
+    retrieved_count = len(ordered_citations)
+    siblings_added = 0
+    if sibling_index and CONFIG.get("enable_sibling_expansion", True):
+        ordered_citations, siblings_added = expand_court_siblings(
+            ordered_citations,
+            sibling_index,
+            max_per_decision=CONFIG.get("max_siblings_per_decision"),
+        )
         logs.append({
-            "type": "llm_response",
-            "iteration": iteration + 1,
-            "response": response,
-            "response_trunc": response[:500] if len(response) > 500 else response,
+            "type": "sibling_expansion",
+            "retrieved_count": retrieved_count,
+            "siblings_added": siblings_added,
+            "expanded_pool_size": len(ordered_citations),
         })
-        
-        if verbose:
-            print(f"\n[Iteration {iteration + 1}] LLM output (trunc):")
-            print(response[:500])
-        
-        # Parse all actions from response
-        actions = parse_all_agent_actions(response)
-        
-        # Log parsed actions
-        if actions:
-            logs.append({
-                "type": "parse",
-                "iteration": iteration + 1,
-                "actions_count": len(actions),
-                "actions": actions,
-            })
-            if verbose:
-                print(f"\n[Iteration {iteration + 1}] Parsed {len(actions)} action(s):")
-                for action, action_input in actions:
-                    print(f"  Action: {action}, Input: {action_input[:100]}")
-        
-        # Execute all actions
-        observations = []
-        for action, action_input in actions:
-            action_lower = action.lower()
-            
-            if action_lower in tools:
-                tool = tools[action_lower]
-                observation = tool(action_input)
-                
-                # Extract citations from full observation (before truncation)
-                obs_citations = tool.get_last_citations()
-                all_citations.extend(obs_citations)
-                
-                # Truncate observation only for LLM conversation (preserve full data in logs)
-                obs_truncated = truncate_observation_for_llm(observation, CONFIG["max_observation_chars"])
-                observations.append(f"Tool {action_lower}: {obs_truncated}")
-                
-                # Log tool execution with full observation
-                logs.append({
-                    "type": "tool_execution",
-                    "iteration": iteration + 1,
-                    "tool": action,
-                    "query": action_input,
-                    "citations_found": obs_citations,
-                    "citations_count": len(obs_citations),
-                    "observation": observation,
-                    "observation_trunc": observation[:500] if len(observation) > 500 else observation,
-                })
-                
-                if verbose:
-                    print(f"\n[Tool: {action}]")
-                    print(f"  Query: {action_input}")
-                    print(f"  Citations found: {len(obs_citations)}")
-                    if obs_citations:
-                        print(f"  Citations: {obs_citations[:5]}")
-                    print(f"  Observation (trunc): {observation[:300]}")
-            else:
-                error_msg = f"Unknown tool '{action}'. Available: search_laws, search_courts"
-                observations.append(f"Tool {action_lower}: {error_msg}")
-                logs.append({
-                    "type": "tool_error",
-                    "iteration": iteration + 1,
-                    "tool": action,
-                    "error": error_msg,
-                })
-        
-        # Add all observations to conversation
-        if observations:
-            conversation += "\n" + "\n".join(observations) + "\n\n[INST] Continue your analysis. [/INST]\n\nThought:"
-        
-        # Check for final answer AFTER executing all actions
-        if "Final Answer:" in response:
-            final_text = response.split("Final Answer:")[-1].strip()
-            citations = extract_citations_from_text(final_text)
-            all_citations.extend(citations)
-            
-            logs.append({
-                "type": "parse",
-                "iteration": iteration + 1,
-                "status": "final_answer_seen",
-            })
-            
-            if verbose:
-                print(f"\n[Iteration {iteration + 1}] Final Answer detected")
-            break
-        
-        # If no actions found and no final answer, try to extract citations from response
-        if not actions and "Final Answer:" not in response:
-            citations = extract_citations_from_text(response)
-            all_citations.extend(citations)
-            logs.append({
-                "type": "parse",
-                "iteration": iteration + 1,
-                "status": "no_actions_found",
-                "citations_extracted": citations,
-            })
-            break
-    
-    # Deduplicate citations
-    unique_citations = list(set(all_citations))
-    
+
     logs.append({
         "type": "summary",
-        "total_iterations": len(logs),
-        "total_citations": len(unique_citations),
-        "citations": unique_citations,
+        "issues_count": len(issues),
+        "retrieved_count": retrieved_count,
+        "siblings_added": siblings_added,
+        "candidate_pool_size": len(ordered_citations),
+        "citations": ordered_citations,
     })
-    
+
     if verbose:
-        print("\n" + "="*50)
-        print("Found citations:")
-        for c in unique_citations:
-            print(f"  - {c}")
-    
-    return unique_citations, logs
+        print(
+            f"\nCandidate pool: {len(ordered_citations)} unique citations "
+            f"({retrieved_count} retrieved + {siblings_added} siblings)"
+        )
+
+    return ordered_citations, logs

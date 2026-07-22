@@ -1,5 +1,5 @@
 from omnilex.evaluation.scorer import Scorer, validate_submission_format
-from our_pipeline.constants import OUTPUT_PATH
+from constants import OUTPUT_PATH
 import pandas as pd
 
 def validate_and_score_submission(query_file):

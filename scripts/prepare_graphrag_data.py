@@ -24,7 +24,7 @@ import pandas as pd
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data" / "llm-agentic-legal-information-retrieval"
+DATA_DIR = PROJECT_ROOT / "data"
 OUTPUT_DIR = PROJECT_ROOT / "graphrag" / "input"
 
 LAWS_CSV = DATA_DIR / "laws_de.csv"
@@ -58,23 +58,32 @@ def extract_statute(citation: str) -> str:
 
 
 def extract_bge_volume_division(citation: str) -> str:
-    """Extract BGE volume and division from a court citation.
+    """Extract a grouping key from a court citation.
 
-    'BGE 139 I 2 E. 1' -> 'BGE_139_I'
-    'BGE 121 III 38 E. 2b' -> 'BGE_121_III'
-    Returns 'BGE_OTHER' if no match.
+    Leading BGE decisions:
+      'BGE 139 I 2 E. 1'      -> 'BGE_139_I'
+      'BGE 121 III 38 E. 2b'  -> 'BGE_121_III'
+
+    Non-leading (docket-style, no "BGE" prefix in corpus):
+      '5A_800/2019 E 2.'       -> 'BGer_5A_2019'
+      '2C_123/2020 E 1.2.3'   -> 'BGer_2C_2020'
+
+    Returns 'BGE_OTHER' if no pattern matches.
     """
+    # Leading BGE decisions: BGE <vol> <roman-division> ...
     match = re.match(r"BGE\s+(\d+)\s+(I{1,3}V?|VI?|VII|VIII|IX|X{0,3}(?:IX|IV|V?I{0,3}))", citation)
     if match:
-        vol = match.group(1)
-        div = match.group(2)
-        return f"BGE_{vol}_{div}"
-    # BGer docket-style: BGer 4A_123/2020
-    match2 = re.match(r"BGer\s+(\w+)_(\d+)/(\d+)", citation)
+        return f"BGE_{match.group(1)}_{match.group(2)}"
+    # Non-leading docket-style (no "BGer" prefix): 5A_800/2019 E 2.
+    match2 = re.match(r"([A-Z]\d*[A-Z]?)_\d+/(\d{4})", citation)
     if match2:
         chamber = match2.group(1)
-        year = match2.group(3)
+        year = match2.group(2)
         return f"BGer_{chamber}_{year}"
+    # Explicit "BGer" prefix (less common in corpus): BGer 4A_123/2020
+    match3 = re.match(r"BGer\s+([A-Z]\d*[A-Z]?)_\d+/(\d{4})", citation)
+    if match3:
+        return f"BGer_{match3.group(1)}_{match3.group(2)}"
     return "BGE_OTHER"
 
 
@@ -204,7 +213,8 @@ def main() -> None:
 
     if not DATA_DIR.exists():
         print(f"Error: data directory not found at {DATA_DIR}", file=sys.stderr)
-        print("Run download_kaggle_data.py first.", file=sys.stderr)
+        print("Run:  python download_kaggle_data.py", file=sys.stderr)
+        print("Then copy the CSVs from the printed kagglehub cache path into data/", file=sys.stderr)
         sys.exit(1)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
