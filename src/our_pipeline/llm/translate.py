@@ -5,10 +5,14 @@ from __future__ import annotations
 import logging
 import re
 
-from our_pipeline.constants import CONFIG
-from our_pipeline.llm.load_llm import llm
+from constants import CONFIG
+from llm.load_llm import llm
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache shared across all tool instances — avoids duplicate translation
+# calls when LawSearchTool and CourtSearchTool are called with the same query string.
+_TRANSLATION_CACHE: dict[str, dict[str, str]] = {}
 
 _PROMPT_TEMPLATE = (
     "You are a legal translation assistant for Swiss law "
@@ -26,16 +30,19 @@ _PROMPT_TEMPLATE = (
 def translate_query(query: str) -> dict[str, str]:
     """Translate a legal query to English, German, and French using the shared LLM.
 
-    Uses a structured prompt requesting exactly three labelled lines.
-    Returns only the languages that were successfully parsed; returns an
-    empty dict on complete failure so callers can fall back to the original.
+    Results are cached globally so repeated calls with the same query (e.g. from
+    both LawSearchTool and CourtSearchTool in the same agent turn) cost only one
+    API call.
 
     Args:
         query: Query string in any language.
 
     Returns:
-        Dict with zero to three entries: ``{"en": "...", "de": "...", "fr": "..."}``.
+        Dict with zero to four entries: ``{"en": "...", "de": "...", "fr": "...", "it": "..."}``.
     """
+    if query in _TRANSLATION_CACHE:
+        return _TRANSLATION_CACHE[query]
+
     prompt = _PROMPT_TEMPLATE.format(query=query)
     try:
         raw = llm(
@@ -73,4 +80,5 @@ def translate_query(query: str) -> dict[str, str]:
 
     if not translations:
         logger.warning("Translation parsing failed for query %r; raw=%r", query, raw[:200])
+    _TRANSLATION_CACHE[query] = translations
     return translations

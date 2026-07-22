@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from tqdm import tqdm
 import pandas as pd
 from our_pipeline.llm.define_agent import run_agent
@@ -56,11 +59,20 @@ def generate_predictions(test_df: pd.DataFrame, TOOLS, text_lookup=None) -> pd.D
 
         predictions.append({
             "query_id": query_id,
-            "predicted_citations": ";".join(raw_citations),
         })
 
     print(f"\nGenerated predictions for {len(predictions)} queries")
     print(f"Collected logs for {len(all_logs)} queries")
 
     predictions_df = pd.DataFrame(predictions)
-    return predictions_df
+    return predictions_df, all_logs
+
+
+def save_run_logs(all_logs: list[dict], path: Path | str) -> None:
+    """Persist per-query retrieval logs as JSONL (one query per line)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for entry in all_logs:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    print(f"Run logs saved to: {path}")

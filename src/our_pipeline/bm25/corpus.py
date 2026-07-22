@@ -1,3 +1,10 @@
+import os
+
+import numpy as np
+from dotenv import load_dotenv
+# from tqdm.auto import tqdm
+
+#from constants import QUERY_FILE
 import pickle
 import re
 from functools import lru_cache
@@ -323,9 +330,13 @@ def get_or_build_index(
     # Use cached index if available and not forcing rebuild
     if index_path.exists() and not force_rebuild:
         print(f"Loading cached {name} index from {index_path}")
-        index = BM25Index.load(index_path)
-        print(f"  Loaded {len(index.documents):,} documents")
-        return index
+        try:
+            index = BM25Index.load(index_path)
+            print(f"  Loaded {len(index.documents):,} documents")
+            return index
+        except (EOFError, pickle.UnpicklingError, Exception) as e:
+            print(f"  Warning: cached index is corrupted ({e}), rebuilding...")
+            index_path.unlink(missing_ok=True)
     
     # Check CSV exists
     if not csv_path.exists():
@@ -369,3 +380,282 @@ def get_query_file():
         else:
             raise FileNotFoundError(f"Query file not found: {QUERY_FILE}")
     return query_file
+
+
+# ---------------------------------------------------------------------------
+# Dense (semantic) index backed by FAISS + Mistral embeddings
+# ---------------------------------------------------------------------------
+
+_DEFAULT_EMBED_API_BASE = "https://chat-ai.academiccloud.de/v1"
+_DEFAULT_EMBED_MODEL = "e5-mistral-7b-instruct"
+
+
+class DenseIndex:
+    """Semantic vector index using FAISS + local sentence-transformers or remote API.
+
+    When ``model`` is a local directory path that exists on disk, embeddings are
+    produced locally via ``sentence_transformers.SentenceTransformer`` (GPU if
+    available).  Otherwise the OpenAI-compatible API at ``api_base`` is used.
+
+    The FAISS IndexFlatIP provides exact inner-product (cosine) search.
+    """
+
+    def __init__(
+        self,
+        documents: list[dict] | None = None,
+        text_field: str = "text",
+        citation_field: str = "citation",
+        model: str = _DEFAULT_EMBED_MODEL,
+        api_key: str | None = None,
+        api_base: str = _DEFAULT_EMBED_API_BASE,
+        batch_size: int = 32,
+    ):
+        load_dotenv()
+        self.text_field = text_field
+        self.citation_field = citation_field
+        self.model = model
+        self.api_key = api_key or os.getenv("API_KEY")
+        self.api_base = api_base
+        self.batch_size = batch_size
+
+        self.documents: list[dict] = []
+        self._faiss_index = None
+        self._embeddings: np.ndarray | None = None
+        self._st_model = None  # lazy-loaded sentence-transformer
+
+        if documents:
+            self.build(documents)
+
+    # ------------------------------------------------------------------
+    # Embedding
+    # ------------------------------------------------------------------
+
+    def _is_local_model(self) -> bool:
+        return Path(self.model).exists()
+
+    def _embed_texts(self, texts: list[str], is_query: bool = False) -> np.ndarray:
+        """Embed texts locally or via API, returning a float32 matrix."""
+        if self._is_local_model():
+            return self._embed_local(texts, is_query=is_query)
+        return self._embed_api(texts)
+
+    def _embed_local(self, texts: list[str], is_query: bool = False) -> np.ndarray:
+        """Embed using a local sentence-transformers model.
+
+        Uses all available CUDA GPUs via encode_multi_process for corpus
+        embedding (is_query=False).  Single-GPU or CPU for query embedding.
+        """
+        import torch
+        from sentence_transformers import SentenceTransformer
+
+        n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        primary_device = "cuda:0" if n_gpus > 0 else "cpu"
+
+        if self._st_model is None:
+            print(f"Loading local embedding model from {self.model} on {primary_device}…")
+            print(f"  Detected {n_gpus} CUDA GPU(s)")
+            self._st_model = SentenceTransformer(self.model, device=primary_device)
+
+        prefix = "query: " if is_query else "passage: "
+        prefixed = [prefix + (t if t.strip() else " ") for t in texts]
+
+        if n_gpus > 1 and not is_query:
+            devices = [f"cuda:{i}" for i in range(n_gpus)]
+            print(f"  Spreading corpus embedding across {devices}")
+            pool = self._st_model.start_multi_process_pool(target_devices=devices)
+            try:
+                embeddings = self._st_model.encode_multi_process(
+                    prefixed, pool, batch_size=self.batch_size
+                )
+            finally:
+                self._st_model.stop_multi_process_pool(pool)
+        else:
+            embeddings = self._st_model.encode(
+                prefixed,
+                normalize_embeddings=True,
+                batch_size=self.batch_size,
+                show_progress_bar=True,
+            )
+        return np.array(embeddings, dtype=np.float32)
+
+    def _embed_api(self, texts: list[str]) -> np.ndarray:
+        """Call the remote OpenAI-compatible embeddings endpoint in batches."""
+        from openai import OpenAI
+
+        client = OpenAI(api_key=self.api_key, base_url=self.api_base)
+        all_embeddings: list[list[float]] = []
+
+        with tqdm(total=len(texts), desc="Embedding documents", unit="doc") as pbar:
+            for i in range(0, len(texts), self.batch_size):
+                batch = texts[i : i + self.batch_size]
+                batch = [t if t.strip() else " " for t in batch]
+                response = client.embeddings.create(model=self.model, input=batch)
+                all_embeddings.extend(e.embedding for e in response.data)
+                pbar.update(len(batch))
+
+        return np.array(all_embeddings, dtype=np.float32)
+
+    # ------------------------------------------------------------------
+    # Build / Search
+    # ------------------------------------------------------------------
+
+    def build(self, documents: list[dict]) -> None:
+        """Embed all documents and build a FAISS IndexFlatIP."""
+        import faiss
+
+        self.documents = documents
+        texts = [doc.get(self.text_field, "") for doc in documents]
+
+        print(f"Building dense index: embedding {len(texts):,} documents with {self.model}…")
+        self._embeddings = self._embed_texts(texts)
+
+        # Normalise to unit length → inner product == cosine similarity
+        faiss.normalize_L2(self._embeddings)
+
+        dim = self._embeddings.shape[1]
+        self._faiss_index = faiss.IndexFlatIP(dim)
+        self._faiss_index.add(self._embeddings)
+        print(f"Dense index ready: {self._faiss_index.ntotal:,} vectors, dim={dim}")
+
+    def search(self, query: str, top_k: int = 10) -> list[dict]:
+        """Return top-k documents by cosine similarity to the query."""
+        import faiss
+
+        if self._faiss_index is None:
+            raise ValueError("Dense index not built. Call build() first.")
+
+        query_emb = self._embed_texts([query], is_query=True)
+        if not self._is_local_model():
+            faiss.normalize_L2(query_emb)  # local model already normalizes
+
+        scores, indices = self._faiss_index.search(query_emb, top_k)
+
+        results = []
+        for score, idx in zip(scores[0], indices[0]):
+            if idx == -1:
+                continue
+            doc = self.documents[idx].copy()
+            doc["_score"] = float(score)
+            results.append(doc)
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, dir_path: Path | str) -> None:
+        """Persist FAISS index + documents to a directory."""
+        import faiss
+
+        dir_path = Path(dir_path)
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        faiss.write_index(self._faiss_index, str(dir_path / "index.faiss"))
+        np.save(dir_path / "embeddings.npy", self._embeddings)
+
+        meta = {
+            "documents": self.documents,
+            "text_field": self.text_field,
+            "citation_field": self.citation_field,
+            "model": self.model,
+            "api_base": self.api_base,
+        }
+        with open(dir_path / "meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
+
+    @classmethod
+    def load(
+        cls,
+        dir_path: Path | str,
+        api_key: str | None = None,
+    ) -> "DenseIndex":
+        """Load a previously saved DenseIndex from a directory."""
+        import faiss
+
+        dir_path = Path(dir_path)
+
+        with open(dir_path / "meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+
+        instance = cls(
+            text_field=meta["text_field"],
+            citation_field=meta.get("citation_field", "citation"),
+            model=meta.get("model", _DEFAULT_EMBED_MODEL),
+            api_key=api_key,
+            api_base=meta.get("api_base", _DEFAULT_EMBED_API_BASE),
+        )
+        instance.documents = meta["documents"]
+        instance._embeddings = np.load(dir_path / "embeddings.npy")
+        instance._faiss_index = faiss.read_index(str(dir_path / "index.faiss"))
+
+        return instance
+
+
+def get_or_build_dense_index(
+    name: str,
+    csv_path: Path,
+    index_dir: Path,
+    force_rebuild: bool = False,
+    max_rows: int | None = None,
+    model: str = _DEFAULT_EMBED_MODEL,
+    api_key: str | None = None,
+    api_base: str = _DEFAULT_EMBED_API_BASE,
+    batch_size: int = 32,
+) -> DenseIndex:
+    """Load a cached DenseIndex or build one from a CSV corpus.
+
+    Args:
+        name: Human-readable name for logging.
+        csv_path: Path to corpus CSV with 'citation' and 'text' columns.
+        index_dir: Directory for the FAISS index artefacts.
+        force_rebuild: Rebuild even when a valid cache exists.
+        max_rows: Limit the corpus size (useful for the large courts corpus).
+        model: Embedding model name.
+        api_key: API key for the embedding service.
+        api_base: Base URL for the embedding service.
+        batch_size: Documents per embedding API call.
+
+    Returns:
+        Loaded or freshly built DenseIndex.
+    """
+    meta_path = index_dir / "meta.pkl"
+
+    if meta_path.exists() and not force_rebuild:
+        print(f"Loading cached dense {name} index from {index_dir}")
+        try:
+            idx = DenseIndex.load(index_dir, api_key=api_key)
+            print(f"  Loaded {len(idx.documents):,} documents")
+            return idx
+        except Exception as e:
+            print(f"  Warning: cached dense index corrupted ({e}), rebuilding…")
+
+    if not csv_path.exists():
+        print(f"Warning: {csv_path} not found. Creating empty dense index.")
+        return DenseIndex(documents=[])
+
+    print(f"\n{'='*50}")
+    print(f"Building dense {name} index from {csv_path}")
+    if max_rows:
+        print(f"  (limited to {max_rows:,} rows)")
+    print(f"{'='*50}")
+
+    documents = load_csv_corpus(csv_path, max_rows=max_rows)
+
+    if not documents:
+        print("Warning: No documents loaded. Creating empty dense index.")
+        return DenseIndex(documents=[])
+
+    idx = DenseIndex(
+        documents=documents,
+        model=model,
+        api_key=api_key,
+        api_base=api_base,
+        batch_size=batch_size,
+    )
+
+    print(f"Saving dense {name} index to {index_dir}…")
+    idx.save(index_dir)
+    print("Dense index cached.")
+
+    return idx

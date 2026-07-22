@@ -19,6 +19,19 @@ graphrag/.env
 # LightRAG generated index (large, reproducible from indexing)
 lightrag/
 
+slurm-*
+
+# GraphRAG generated outputs (large, reproducible from indexing)
+graphrag/output/
+graphrag/cache/
+graphrag/logs/
+graphrag/input/
+
+graphrag/.env
+
+# LightRAG generated index (large, reproducible from indexing)
+lightrag/
+
 # C extensions
 *.so
 

@@ -1,4 +1,6 @@
 import re
+# from expand import expand_court_siblings
+# from our_pipeline.llm.decompose import decompose_query
 from omnilex.citations.normalizer import CitationNormalizer
 from our_pipeline.llm.load_llm import llm
 from our_pipeline.llm.prompts import AGENT_SYSTEM_PROMPT
@@ -219,7 +221,7 @@ def run_agent(query: str, tools: dict[str, callable], verbose: bool = False) -> 
     kept only as context/logs to avoid flooding predictions and destroying precision.
 
     Returns:
-        Tuple of (citations, logs) where logs contains detailed execution information
+        Tuple of (citations, logs) where logs contains detailed execution info.
     """
     # Format with Mistral Instruct tags
     conversation = f"[INST] {AGENT_SYSTEM_PROMPT}\n\nQuery: {query}\n\nThought: [/INST]"
@@ -261,10 +263,10 @@ def run_agent(query: str, tools: dict[str, callable], verbose: bool = False) -> 
 
         # Log LLM output
         logs.append({
-            "type": "llm_response",
-            "iteration": iteration + 1,
-            "response": response,
-            "response_trunc": response[:500] if len(response) > 500 else response,
+            "type": "sibling_expansion",
+            "retrieved_count": retrieved_count,
+            "siblings_added": siblings_added,
+            "expanded_pool_size": len(ordered_citations),
         })
 
         if verbose:
